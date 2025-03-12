@@ -251,9 +251,20 @@ impl BlockSparseTop2MLP {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let w1 = linear_no_bias(hidden_sz, intermediate_sz, vb.pp("w1"))?;
-        let w2 = linear_no_bias(intermediate_sz, hidden_sz, vb.pp("w2"))?;
-        let w3 = linear_no_bias(hidden_sz, intermediate_sz, vb.pp("w3"))?;
+        tracing::debug!("bsp2mlp::new: {} {}", hidden_sz, intermediate_sz);
+        tracing::debug!("ppw1");
+        let vw1 = vb.pp("w1");
+        tracing::debug!("lnbw1 ({:?})", vw1.dtype);
+        let w1 = linear_no_bias(hidden_sz, intermediate_sz, vw1)?;
+        tracing::debug!("ppw2");
+        let vw2 = vb.pp("w2");
+        tracing::debug!("lnbw2");
+        let w2 = linear_no_bias(intermediate_sz, hidden_sz, vw2)?;
+        tracing::debug!("ppw3");
+        let vw3 = vb.pp("w3");
+        tracing::debug!("lnbw3");
+        let w3 = linear_no_bias(hidden_sz, intermediate_sz, vw3)?;
+        tracing::debug!("  done");
         Ok(Self {
             w1,
             w2,
@@ -280,9 +291,12 @@ struct SparseMoeBlock {
 
 impl SparseMoeBlock {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+        tracing::debug!("smb::new -- lin-no-b");
         let gate = linear_no_bias(cfg.hidden_size, cfg.num_local_experts, vb.pp("gate"))?;
+        tracing::debug!("smb::new -- vec::new: {}", cfg.num_local_experts);
         let mut experts = Vec::with_capacity(cfg.num_local_experts);
         let vb = vb.pp("experts");
+        tracing::debug!("smb::new -- loop");
         for idx in 0..cfg.num_local_experts {
             let expert = BlockSparseTop2MLP::new(cfg, vb.pp(idx))?;
             experts.push(expert)
@@ -364,8 +378,11 @@ struct DecoderLayer {
 
 impl DecoderLayer {
     fn new(rotary_emb: Arc<RotaryEmbedding>, cfg: &Config, vb: VarBuilder) -> Result<Self> {
+        tracing::debug!("attn new ==== {:?}", vb.dtype);
         let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"))?;
+        tracing::debug!("smb::new");
         let block_sparse_moe = SparseMoeBlock::new(cfg, vb.pp("block_sparse_moe"))?;
+        tracing::debug!("rmsnorms");
         let input_layernorm =
             RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm = RmsNorm::new(
@@ -373,6 +390,7 @@ impl DecoderLayer {
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
         )?;
+        tracing::debug!("declaynewdone");
         Ok(Self {
             self_attn,
             block_sparse_moe,
@@ -399,7 +417,7 @@ impl DecoderLayer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Model {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
@@ -408,21 +426,27 @@ pub struct Model {
     sliding_window: usize,
     device: Device,
     dtype: DType,
+    _vb: VarBuilder<'static>,
 }
 
 impl Model {
-    pub fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    pub fn new(cfg: &Config, vb: VarBuilder<'static>) -> Result<Self> {
+        tracing::debug!("vb.pp model");
         let vb_m = vb.pp("model");
+        tracing::debug!("embedding");
         let embed_tokens =
             candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
+            tracing::debug!("layer: {} / {}", layer_idx, cfg.num_hidden_layers);
             let layer = DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx))?;
             layers.push(layer)
         }
+        tracing::debug!("rmsnorm");
         let norm = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        tracing::debug!("linear_no_bias");
         let lm_head = linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         Ok(Self {
             embed_tokens,
@@ -432,6 +456,7 @@ impl Model {
             sliding_window: cfg.sliding_window,
             device: vb.device().clone(),
             dtype: vb.dtype(),
+            _vb: vb,
         })
     }
 

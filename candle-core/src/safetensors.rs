@@ -99,12 +99,14 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
     let size_in_bytes = T::DTYPE.size_in_bytes();
     let elem_count = data.len() / size_in_bytes;
     if (data.as_ptr() as usize) % size_in_bytes == 0 {
+        tracing::debug!("alignment good");
         // SAFETY This is safe because we just checked that this
         // was correctly aligned.
         let data: &[T] =
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
         Tensor::from_slice(data, shape, device)
     } else {
+        tracing::debug!("alignment bad");
         // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
         // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
@@ -208,6 +210,7 @@ impl Tensor {
 }
 
 fn convert(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
+    tracing::debug!("==> convert: {:?}", view.dtype());
     match view.dtype() {
         st::Dtype::U8 => convert_::<u8>(view, device),
         st::Dtype::U16 => {
@@ -308,6 +311,7 @@ impl MmapedSafetensors {
         let mut safetensors = vec![];
         for (index, p) in paths.iter().enumerate() {
             let p = p.as_ref();
+            tracing::debug!("mmap: {:?}", p);
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
             let file = memmap2::MmapOptions::new()
                 .map(&file)
@@ -315,12 +319,14 @@ impl MmapedSafetensors {
             let data = yoke::Yoke::<SafeTensors_<'static>, memmap2::Mmap>::try_attach_to_cart(
                 file,
                 |data: &[u8]| {
+                    tracing::debug!("deserialize {} bytes", data.len());
                     let st = safetensors::SafeTensors::deserialize(data)
                         .map_err(|e| Error::from(e).with_path(p))?;
                     Ok::<_, Error>(SafeTensors_(st))
                 },
             )?;
             for k in data.get().0.names() {
+                tracing::debug!("route add {}", k);
                 routing.insert(k.to_string(), index);
             }
             safetensors.push(data)
@@ -332,7 +338,12 @@ impl MmapedSafetensors {
     }
 
     pub fn load(&self, name: &str, dev: &Device) -> Result<Tensor> {
-        self.get(name)?.load(dev)
+        tracing::debug!("LOAD: get");
+        let g = self.get(name)?;
+        tracing::debug!("LOAD: load");
+        let r = g.load(dev);
+        tracing::debug!("LOAD: done");
+        r
     }
 
     pub fn tensors(&self) -> Vec<(String, st::TensorView<'_>)> {
@@ -344,6 +355,7 @@ impl MmapedSafetensors {
     }
 
     pub fn get(&self, name: &str) -> Result<st::TensorView<'_>> {
+        tracing::debug!("-> get");
         let index = match &self.routing {
             None => 0,
             Some(routing) => {
@@ -356,7 +368,12 @@ impl MmapedSafetensors {
                 *index
             }
         };
-        Ok(self.safetensors[index].get().0.tensor(name)?)
+        tracing::debug!("-> get[{}]", index);
+        let x = &self.safetensors[index].get().0;
+        tracing::debug!("tensor");
+        let r = x.tensor(name)?;
+        tracing::debug!("tensor - done");
+        Ok(r)
     }
 }
 

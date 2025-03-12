@@ -73,6 +73,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn affine(&self, layout: &Layout, mul: f64, add: f64) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -90,6 +91,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn powf(&self, layout: &Layout, alpha: f64) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -107,6 +109,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn elu(&self, layout: &Layout, alpha: f64) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -124,6 +127,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn cmp(
         &self,
         op: CmpOp,
@@ -159,6 +163,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn reduce_op(&self, op: ReduceOp, layout: &Layout, s: &[usize]) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -176,6 +181,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn to_dtype(&self, layout: &Layout, dtype: DType) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -193,6 +199,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn apply_op1(&self, l: &Layout, c: &dyn CustomOp1) -> Result<(Self, Shape)> {
         match self {
             Self::Cpu(storage) => {
@@ -210,6 +217,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn apply_op2(
         &self,
         l1: &Layout,
@@ -235,6 +243,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn apply_op3(
         &self,
         l1: &Layout,
@@ -263,6 +272,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn inplace_op1(&mut self, l: &Layout, c: &dyn InplaceOp1) -> Result<()> {
         match self {
             Self::Cpu(storage) => c.cpu_fwd(storage, l),
@@ -271,6 +281,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn inplace_op2(
         &mut self,
         l1: &Layout,
@@ -287,6 +298,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn inplace_op3(
         &mut self,
         l1: &Layout,
@@ -308,6 +320,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn unary_impl<B: op::UnaryOpT>(&self, layout: &Layout) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -325,6 +338,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn binary_impl<B: op::BinaryOpT>(
         &self,
         rhs: &Self,
@@ -359,6 +373,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn conv1d(
         &self,
         l: &Layout,
@@ -389,6 +404,7 @@ impl Storage {
             .bt()),
         }
     }
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
 
     pub(crate) fn conv_transpose1d(
         &self,
@@ -421,6 +437,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn conv2d(
         &self,
         l: &Layout,
@@ -452,6 +469,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn conv_transpose2d(
         &self,
         l: &Layout,
@@ -483,6 +501,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn avg_pool2d(
         &self,
         layout: &Layout,
@@ -505,6 +524,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn max_pool2d(
         &self,
         layout: &Layout,
@@ -527,6 +547,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn upsample_nearest1d(&self, layout: &Layout, sz: usize) -> Result<Self> {
         match self {
             Storage::Cpu(storage) => {
@@ -543,6 +564,7 @@ impl Storage {
             }
         }
     }
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
 
     pub(crate) fn upsample_nearest2d(&self, layout: &Layout, h: usize, w: usize) -> Result<Self> {
         match self {
@@ -561,6 +583,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn where_cond(
         &self,
         layout: &Layout,
@@ -594,6 +617,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn gather(
         &self,
         l: &Layout,
@@ -619,6 +643,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn scatter_add(
         &self,
         l: &Layout,
@@ -647,6 +672,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn index_add(
         &self,
         l: &Layout,
@@ -675,6 +701,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn index_select(
         &self,
         rhs: &Self,
@@ -705,6 +732,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     pub(crate) fn matmul(
         &self,
         rhs: &Self,
@@ -736,6 +764,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     // self, the source can be strided whereas dst is contiguous.
     pub(crate) fn copy_strided_src(
         &self,
@@ -758,6 +787,7 @@ impl Storage {
         }
     }
 
+    #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn copy2d(
         &self,

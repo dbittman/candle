@@ -283,7 +283,7 @@ impl<T: k_quants::GgmlType + Send + Sync> QuantizedType for Vec<T> {
     fn dequantize(&self, elem_count: usize) -> Result<CpuStorage> {
         let mut ys = vec![0.0f32; elem_count];
         T::to_float(self.as_slice(), &mut ys)?;
-        Ok(CpuStorage::F32(ys))
+        Ok(CpuStorage::F32(ys.into()))
     }
 
     fn storage_size_in_bytes(&self) -> usize {
@@ -496,7 +496,7 @@ impl crate::CustomOp1 for QTensor {
         let slice = &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
         let mut dst_storage = vec![0f32; dst_shape.elem_count()];
         self_storage.matmul_t((dst_shape.elem_count() / n, k, n), slice, &mut dst_storage)?;
-        Ok((crate::CpuStorage::F32(dst_storage), dst_shape))
+        Ok((crate::CpuStorage::F32(dst_storage.into()), dst_shape))
     }
 
     fn metal_fwd(

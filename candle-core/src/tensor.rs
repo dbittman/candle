@@ -502,6 +502,7 @@ impl Tensor {
     /// ]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
+    #[tracing::instrument(level = tracing::Level::DEBUG, skip_all)]
     pub fn from_slice<S: Into<Shape>, D: crate::WithDType>(
         array: &[D],
         shape: S,
@@ -2128,6 +2129,7 @@ impl Tensor {
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn to_dtype(&self, dtype: DType) -> Result<Self> {
+        tracing::debug!("to_dtype: {:?} {:?}", self.dtype(), dtype);
         if self.dtype() == dtype {
             Ok(self.clone())
         } else {
