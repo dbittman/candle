@@ -20,6 +20,7 @@ rayon = { workspace = true }
 safetensors = { workspace = true }
 serde = { workspace = true }
 metal = { workspace = true, optional = true }
+tracing = { workspace = true }
 candle-metal-kernels = { workspace = true, optional = true }
 
 [dev-dependencies]

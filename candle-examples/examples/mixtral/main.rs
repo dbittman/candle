@@ -15,6 +15,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use tokenizers::Tokenizer;
+use tracing::Level;
 
 struct TextGeneration {
     model: Model,
@@ -72,10 +73,13 @@ impl TextGeneration {
         };
         let start_gen = std::time::Instant::now();
         for index in 0..sample_len {
+            let start = std::time::Instant::now();
+            tracing::debug!("starting token gen {}", index);
             let context_size = if index > 0 { 1 } else { tokens.len() };
             let start_pos = tokens.len().saturating_sub(context_size);
             let ctxt = &tokens[start_pos..];
             let input = Tensor::new(ctxt, &self.device)?.unsqueeze(0)?;
+            tracing::debug!("model forward input");
             let logits = self.model.forward(&input, start_pos)?;
             let logits = logits.squeeze(0)?.squeeze(0)?.to_dtype(DType::F32)?;
             let logits = if self.repeat_penalty == 1. {
@@ -89,16 +93,22 @@ impl TextGeneration {
                 )?
             };
 
+            tracing::debug!("logits sample");
             let next_token = self.logits_processor.sample(&logits)?;
             tokens.push(next_token);
             generated_tokens += 1;
             if next_token == eos_token {
                 break;
             }
+            tracing::debug!("tokenizer next");
             if let Some(t) = self.tokenizer.next_token(next_token)? {
                 print!("{t}");
                 std::io::stdout().flush()?;
             }
+            tracing::debug!(
+                "done token in {}ms",
+                (std::time::Instant::now() - start).as_millis()
+            );
         }
         let dt = start_gen.elapsed();
         if let Some(rest) = self.tokenizer.decode_rest().map_err(E::msg)? {
@@ -174,7 +184,15 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let _guard = if args.tracing {
         let (chrome_layer, guard) = ChromeLayerBuilder::new().build();
-        tracing_subscriber::registry().with(chrome_layer).init();
+        let env_layer = tracing_subscriber::fmt::layer()
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+            .with_filter(tracing_subscriber::filter::LevelFilter::from_level(
+                Level::TRACE,
+            ));
+        tracing_subscriber::registry()
+            .with(chrome_layer)
+            .with(env_layer)
+            .init();
         Some(guard)
     } else {
         None
@@ -210,6 +228,11 @@ fn main() -> Result<()> {
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
         None => candle_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
+        /*
+        None => candle_examples::hub_load_local_safetensors(
+            "mixtral-model/snapshots/ffe1a706bacbd5abddc5ff99432ee38f7e0662fb",
+            "model.safetensors.index.json",
+        )?,*/
     };
     println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
@@ -219,6 +242,7 @@ fn main() -> Result<()> {
     let device = candle_examples::device(args.cpu)?;
     let dtype = device.bf16_default_to_f32();
     let vb = unsafe { VarBuilder::from_mmaped_safetensors(&filenames, dtype, &device)? };
+    tracing::debug!("model::new");
     let model = Model::new(&config, vb)?;
     println!("loaded the model in {:?}", start.elapsed());
 

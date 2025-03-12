@@ -210,7 +210,9 @@ impl<B: Backend> VarBuilderArgs<'_, B> {
         hints: B::Hints,
         dtype: DType,
     ) -> Result<Tensor> {
+        tracing::debug!("gwhdt");
         let path = self.path(name);
+        tracing::debug!(" -- backend get");
         self.data
             .backend
             .get(s.into(), &path, hints, dtype, &self.data.device)
@@ -396,7 +398,10 @@ impl SimpleBackend for candle::safetensors::MmapedSafetensors {
         dtype: DType,
         dev: &Device,
     ) -> Result<Tensor> {
-        let tensor = self.load(name, dev)?.to_dtype(dtype)?;
+        tracing::debug!("load...");
+        let tensor = self.load(name, dev)?;
+        tracing::debug!("to_dtype...");
+        let tensor = tensor.to_dtype(dtype)?;
         if tensor.shape() != &s {
             Err(candle::Error::UnexpectedShape {
                 msg: format!("shape mismatch for {name}"),
@@ -405,6 +410,7 @@ impl SimpleBackend for candle::safetensors::MmapedSafetensors {
             }
             .bt())?
         }
+        tracing::debug!("mst: done");
         Ok(tensor)
     }
 
@@ -518,6 +524,7 @@ impl<'a> VarBuilder<'a> {
         dev: &Device,
     ) -> Result<Self> {
         let tensors = candle::safetensors::MmapedSafetensors::multi(paths)?;
+        tracing::debug!("Done with ::multi");
         Ok(Self::from_backend(Box::new(tensors), dtype, dev.clone()))
     }
 

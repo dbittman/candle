@@ -2280,6 +2280,7 @@ impl Tensor {
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn to_dtype(&self, dtype: DType) -> Result<Self> {
+        tracing::debug!("to_dtype: {:?} {:?}", self.dtype(), dtype);
         if self.dtype() == dtype {
             Ok(self.clone())
         } else {

@@ -120,7 +120,7 @@ impl crate::CustomOp1 for ArgSort {
             crate::CpuStorage::F32(vs) => self.asort(vs, layout),
             crate::CpuStorage::F64(vs) => self.asort(vs, layout),
         };
-        let sort_indexes = crate::CpuStorage::U32(sort_indexes);
+        let sort_indexes = crate::CpuStorage::U32(sort_indexes.into());
         Ok((sort_indexes, layout.shape().into()))
     }
 

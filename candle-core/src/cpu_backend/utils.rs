@@ -8,13 +8,13 @@ pub trait Map1 {
 
     fn map(&self, vs: &C, layout: &Layout) -> Result<C> {
         match vs {
-            C::U8(vs) => Ok(C::U8(self.f(vs, layout)?)),
-            C::U32(vs) => Ok(C::U32(self.f(vs, layout)?)),
-            C::I64(vs) => Ok(C::I64(self.f(vs, layout)?)),
-            C::BF16(vs) => Ok(C::BF16(self.f(vs, layout)?)),
-            C::F16(vs) => Ok(C::F16(self.f(vs, layout)?)),
-            C::F32(vs) => Ok(C::F32(self.f(vs, layout)?)),
-            C::F64(vs) => Ok(C::F64(self.f(vs, layout)?)),
+            C::U8(vs) => Ok(C::U8(self.f(vs, layout)?.into())),
+            C::U32(vs) => Ok(C::U32(self.f(vs, layout)?.into())),
+            C::I64(vs) => Ok(C::I64(self.f(vs, layout)?.into())),
+            C::BF16(vs) => Ok(C::BF16(self.f(vs, layout)?.into())),
+            C::F16(vs) => Ok(C::F16(self.f(vs, layout)?.into())),
+            C::F32(vs) => Ok(C::F32(self.f(vs, layout)?.into())),
+            C::F64(vs) => Ok(C::F64(self.f(vs, layout)?.into())),
         }
     }
 }
@@ -24,13 +24,13 @@ pub trait Map1Any {
 
     fn map(&self, vs: &C, layout: &Layout) -> Result<C> {
         match vs {
-            C::U8(vs) => Ok(self.f(vs, layout, C::U8)?),
-            C::U32(vs) => Ok(self.f(vs, layout, C::U32)?),
-            C::I64(vs) => Ok(self.f(vs, layout, C::I64)?),
-            C::BF16(vs) => Ok(self.f(vs, layout, C::BF16)?),
-            C::F16(vs) => Ok(self.f(vs, layout, C::F16)?),
-            C::F32(vs) => Ok(self.f(vs, layout, C::F32)?),
-            C::F64(vs) => Ok(self.f(vs, layout, C::F64)?),
+            C::U8(vs) => Ok(self.f(vs, layout, |x| C::U8(x.into()))?),
+            C::U32(vs) => Ok(self.f(vs, layout, |x| C::U32(x.into()))?),
+            C::I64(vs) => Ok(self.f(vs, layout, |x| C::I64(x.into()))?),
+            C::BF16(vs) => Ok(self.f(vs, layout, |x| C::BF16(x.into()))?),
+            C::F16(vs) => Ok(self.f(vs, layout, |x| C::F16(x.into()))?),
+            C::F32(vs) => Ok(self.f(vs, layout, |x| C::F32(x.into()))?),
+            C::F64(vs) => Ok(self.f(vs, layout, |x| C::F64(x.into()))?),
         }
     }
 }
@@ -41,13 +41,13 @@ pub trait Map2 {
 
     fn map(&self, v1: &C, l1: &Layout, v2: &C, l2: &Layout) -> Result<C> {
         match (v1, v2) {
-            (C::U8(v1), C::U8(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::U32(v1), C::U32(v2)) => Ok(C::U32(self.f(v1, l1, v2, l2)?)),
-            (C::I64(v1), C::I64(v2)) => Ok(C::I64(self.f(v1, l1, v2, l2)?)),
-            (C::BF16(v1), C::BF16(v2)) => Ok(C::BF16(self.f(v1, l1, v2, l2)?)),
-            (C::F16(v1), C::F16(v2)) => Ok(C::F16(self.f(v1, l1, v2, l2)?)),
-            (C::F32(v1), C::F32(v2)) => Ok(C::F32(self.f(v1, l1, v2, l2)?)),
-            (C::F64(v1), C::F64(v2)) => Ok(C::F64(self.f(v1, l1, v2, l2)?)),
+            (C::U8(v1), C::U8(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::U32(v1), C::U32(v2)) => Ok(C::U32(self.f(v1, l1, v2, l2)?.into())),
+            (C::I64(v1), C::I64(v2)) => Ok(C::I64(self.f(v1, l1, v2, l2)?.into())),
+            (C::BF16(v1), C::BF16(v2)) => Ok(C::BF16(self.f(v1, l1, v2, l2)?.into())),
+            (C::F16(v1), C::F16(v2)) => Ok(C::F16(self.f(v1, l1, v2, l2)?.into())),
+            (C::F32(v1), C::F32(v2)) => Ok(C::F32(self.f(v1, l1, v2, l2)?.into())),
+            (C::F64(v1), C::F64(v2)) => Ok(C::F64(self.f(v1, l1, v2, l2)?.into())),
             _ => Err(Error::DTypeMismatchBinaryOp {
                 lhs: v1.dtype(),
                 rhs: v2.dtype(),
@@ -88,13 +88,13 @@ pub trait Map2U8 {
 
     fn map(&self, v1: &C, l1: &Layout, v2: &C, l2: &Layout) -> Result<C> {
         match (v1, v2) {
-            (C::U8(v1), C::U8(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::U32(v1), C::U32(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::I64(v1), C::I64(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::BF16(v1), C::BF16(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::F16(v1), C::F16(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::F32(v1), C::F32(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
-            (C::F64(v1), C::F64(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?)),
+            (C::U8(v1), C::U8(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::U32(v1), C::U32(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::I64(v1), C::I64(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::BF16(v1), C::BF16(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::F16(v1), C::F16(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::F32(v1), C::F32(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
+            (C::F64(v1), C::F64(v2)) => Ok(C::U8(self.f(v1, l1, v2, l2)?.into())),
             _ => Err(Error::DTypeMismatchBinaryOp {
                 lhs: v1.dtype(),
                 rhs: v2.dtype(),

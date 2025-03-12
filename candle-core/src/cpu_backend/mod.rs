@@ -1,4 +1,6 @@
 //! Implementation of Backend Fns for CPU
+use std::mem::ManuallyDrop;
+
 use crate::backend::{BackendDevice, BackendStorage};
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{DType, Error, IntDType, Layout, Result, Shape, WithDType};
@@ -14,17 +16,74 @@ const USE_IM2COL_CONV1D: bool = true;
 const USE_COL2IM_CONV1D_TR: bool = true;
 const USE_IM2COL_CONV2D: bool = true;
 
+#[derive(Debug, Clone)]
+pub struct MyVec<T>(ManuallyDrop<std::vec::Vec<T>>);
+
+impl<T> MyVec<T> {
+    fn from_slice_hack(slice: &[T]) -> Self {
+        tracing::warn!("doing slice hack");
+        Self(ManuallyDrop::new(unsafe {
+            Vec::from_raw_parts(slice.as_ptr() as *mut T, slice.len(), slice.len())
+        }))
+    }
+}
+
+impl<T> AsRef<std::vec::Vec<T>> for MyVec<T> {
+    fn as_ref(&self) -> &std::vec::Vec<T> {
+        &self.0
+    }
+}
+
+impl<T> std::ops::Deref for MyVec<T> {
+    type Target = std::vec::Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> std::ops::DerefMut for MyVec<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> From<Vec<T>> for MyVec<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self(ManuallyDrop::new(value))
+    }
+}
+impl<T> From<MyVec<T>> for Vec<T> {
+    fn from(value: MyVec<T>) -> Self {
+        ManuallyDrop::into_inner(value.0)
+    }
+}
+
 // TODO: Maybe we should not implement [Clone] here and instead have an explicit allocator +
 // intercept the oom errors to avoid panicking and provide a proper error.
 #[derive(Debug, Clone)]
 pub enum CpuStorage {
-    U8(Vec<u8>),
-    U32(Vec<u32>),
-    I64(Vec<i64>),
-    BF16(Vec<bf16>),
-    F16(Vec<f16>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
+    U8(MyVec<u8>),
+    U32(MyVec<u32>),
+    I64(MyVec<i64>),
+    BF16(MyVec<bf16>),
+    F16(MyVec<f16>),
+    F32(MyVec<f32>),
+    F64(MyVec<f64>),
+}
+
+impl CpuStorage {
+    pub fn from_slice_hack<T: WithDType>(slice: &[T]) -> Self {
+        match T::DTYPE {
+            DType::F32 => CpuStorage::F32(MyVec::from_slice_hack(unsafe {
+                std::mem::transmute(slice)
+            })),
+            DType::BF16 => CpuStorage::BF16(MyVec::from_slice_hack(unsafe {
+                std::mem::transmute(slice)
+            })),
+            _ => todo!(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -199,12 +258,14 @@ impl Map1Any for ReduceIndex {
         let dst = match (self.return_index, self.use_min) {
             (false, true) => wrap(self.fold_impl(src, src_l, |x, y| x > y, |v, _i| v)?),
             (false, false) => wrap(self.fold_impl(src, src_l, |x, y| x < y, |v, _i| v)?),
-            (true, true) => {
-                CpuStorage::U32(self.fold_impl(src, src_l, |x, y| x > y, |_v, i| i as u32)?)
-            }
-            (true, false) => {
-                CpuStorage::U32(self.fold_impl(src, src_l, |x, y| x < y, |_v, i| i as u32)?)
-            }
+            (true, true) => CpuStorage::U32(
+                self.fold_impl(src, src_l, |x, y| x > y, |_v, i| i as u32)?
+                    .into(),
+            ),
+            (true, false) => CpuStorage::U32(
+                self.fold_impl(src, src_l, |x, y| x < y, |_v, i| i as u32)?
+                    .into(),
+            ),
         };
         Ok(dst)
     }
@@ -1623,7 +1684,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::U8(storages)
+                Self::U8(storages.into())
             }
             Self::U32(_) => {
                 let storages = storages
@@ -1634,7 +1695,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::U32(storages)
+                Self::U32(storages.into())
             }
             Self::I64(_) => {
                 let storages = storages
@@ -1645,7 +1706,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::I64(storages)
+                Self::I64(storages.into())
             }
             Self::BF16(_) => {
                 let storages = storages
@@ -1656,7 +1717,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::BF16(storages)
+                Self::BF16(storages.into())
             }
             Self::F16(_) => {
                 let storages = storages
@@ -1667,7 +1728,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::F16(storages)
+                Self::F16(storages.into())
             }
             Self::F32(_) => {
                 let storages = storages
@@ -1678,7 +1739,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::F32(storages)
+                Self::F32(storages.into())
             }
             Self::F64(_) => {
                 let storages = storages
@@ -1689,7 +1750,7 @@ impl CpuStorage {
                     })
                     .collect::<Result<Vec<_>>>()?
                     .concat();
-                Self::F64(storages)
+                Self::F64(storages.into())
             }
         };
         Ok(s)
@@ -1716,199 +1777,199 @@ impl BackendStorage for CpuStorage {
         match (self, dtype) {
             (Self::U8(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, |v| bf16::from_f32(v as f32));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::U32(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, |v| bf16::from_f32(v as f32));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::I64(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, |v| bf16::from_f32(v as f32));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::BF16(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::F16(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, |v| bf16::from_f32(v.to_f32()));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::F32(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, bf16::from_f32);
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::F64(storage), DType::BF16) => {
                 let data = unary_map(storage, layout, bf16::from_f64);
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::U8(storage), DType::F16) => {
                 let data = unary_map(storage, layout, |v| f16::from_f32(v as f32));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::U32(storage), DType::F16) => {
                 let data = unary_map(storage, layout, |v| f16::from_f32(v as f32));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::I64(storage), DType::F16) => {
                 let data = unary_map(storage, layout, |v| f16::from_f32(v as f32));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::BF16(storage), DType::F16) => {
                 let data = unary_map(storage, layout, |v| f16::from_f32(v.to_f32()));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::F16(storage), DType::F16) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::F32(storage), DType::F16) => {
                 let data = unary_map(storage, layout, f16::from_f32);
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::F64(storage), DType::F16) => {
                 let data = unary_map(storage, layout, f16::from_f64);
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::U8(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v as f32);
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::U32(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v as f32);
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::I64(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v as f32);
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::BF16(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v.to_f32());
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::F16(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v.to_f32());
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::F32(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::F64(storage), DType::F32) => {
                 let data = unary_map(storage, layout, |v| v as f32);
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::U8(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::BF16(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::F16(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::F32(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::F64(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::U32(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::I64(storage), DType::U8) => {
                 let data = unary_map(storage, layout, |v| v as u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             (Self::U8(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::U32(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::I64(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::BF16(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::F16(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::F32(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::F64(storage), DType::U32) => {
                 let data = unary_map(storage, layout, |v| v as u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::U8(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::U32(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::I64(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::BF16(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::F16(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v.to_f32() as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::F32(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::F64(storage), DType::I64) => {
                 let data = unary_map(storage, layout, |v| v as i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::U8(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v as f64);
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::U32(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v as f64);
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::I64(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v as f64);
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::BF16(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v.to_f64());
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::F16(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v.to_f64());
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::F32(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v as f64);
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::F64(storage), DType::F64) => {
                 let data = unary_map(storage, layout, |v| v);
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
         }
     }
@@ -2009,19 +2070,19 @@ impl BackendStorage for CpuStorage {
         match self {
             Self::BF16(storage) => {
                 let data = unary_map(storage, layout, |v| v.powf(bf16::from_f64(e)));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             Self::F16(storage) => {
                 let data = unary_map(storage, layout, |v| v.powf(f16::from_f64(e)));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             Self::F32(storage) => {
                 let data = unary_map(storage, layout, |v| v.powf(e as f32));
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             Self::F64(storage) => {
                 let data = unary_map(storage, layout, |v| v.powf(e));
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             Self::U8(_) => Err(Error::UnsupportedDTypeForOp(DType::U8, "elu").bt()),
             Self::U32(_) => Err(Error::UnsupportedDTypeForOp(DType::U32, "elu").bt()),
@@ -2034,19 +2095,19 @@ impl BackendStorage for CpuStorage {
         match self {
             Self::BF16(storage) => {
                 let data = unary_map(storage, layout, |v| elu(v, bf16::from_f64(alpha)));
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             Self::F16(storage) => {
                 let data = unary_map(storage, layout, |v| elu(v, f16::from_f64(alpha)));
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             Self::F32(storage) => {
                 let data = unary_map(storage, layout, |v| elu(v, f32::from_f64(alpha)));
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             Self::F64(storage) => {
                 let data = unary_map(storage, layout, |v| elu(v, alpha));
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             Self::U8(_) => Err(Error::UnsupportedDTypeForOp(DType::U8, "elu").bt()),
             Self::U32(_) => Err(Error::UnsupportedDTypeForOp(DType::U32, "elu").bt()),
@@ -2059,50 +2120,50 @@ impl BackendStorage for CpuStorage {
             Self::BF16(storage) => {
                 if B::BF16_VEC {
                     let data = unary_map_vec(storage, layout, B::bf16, B::bf16_vec);
-                    Ok(Self::BF16(data))
+                    Ok(Self::BF16(data.into()))
                 } else {
                     let data = unary_map(storage, layout, B::bf16);
-                    Ok(Self::BF16(data))
+                    Ok(Self::BF16(data.into()))
                 }
             }
             Self::F16(storage) => {
                 if B::F16_VEC {
                     let data = unary_map_vec(storage, layout, B::f16, B::f16_vec);
-                    Ok(Self::F16(data))
+                    Ok(Self::F16(data.into()))
                 } else {
                     let data = unary_map(storage, layout, B::f16);
-                    Ok(Self::F16(data))
+                    Ok(Self::F16(data.into()))
                 }
             }
             Self::F32(storage) => {
                 if B::F32_VEC {
                     let data = unary_map_vec(storage, layout, B::f32, B::f32_vec);
-                    Ok(Self::F32(data))
+                    Ok(Self::F32(data.into()))
                 } else {
                     let data = unary_map(storage, layout, B::f32);
-                    Ok(Self::F32(data))
+                    Ok(Self::F32(data.into()))
                 }
             }
             Self::F64(storage) => {
                 if B::F64_VEC {
                     let data = unary_map_vec(storage, layout, B::f64, B::f64_vec);
-                    Ok(Self::F64(data))
+                    Ok(Self::F64(data.into()))
                 } else {
                     let data = unary_map(storage, layout, B::f64);
-                    Ok(Self::F64(data))
+                    Ok(Self::F64(data.into()))
                 }
             }
             Self::U8(storage) => {
                 let data = unary_map(storage, layout, B::u8);
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             Self::U32(storage) => {
                 let data = unary_map(storage, layout, B::u32);
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             Self::I64(storage) => {
                 let data = unary_map(storage, layout, B::i64);
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
         }
     }
@@ -2120,7 +2181,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::bf16)
                 };
-                Ok(Self::BF16(data))
+                Ok(Self::BF16(data.into()))
             }
             (Self::F16(lhs), Self::F16(rhs)) => {
                 let data = if B::F16_VEC {
@@ -2128,7 +2189,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::f16)
                 };
-                Ok(Self::F16(data))
+                Ok(Self::F16(data.into()))
             }
             (Self::F32(lhs), Self::F32(rhs)) => {
                 let data = if B::F32_VEC {
@@ -2136,7 +2197,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::f32)
                 };
-                Ok(Self::F32(data))
+                Ok(Self::F32(data.into()))
             }
             (Self::F64(lhs), Self::F64(rhs)) => {
                 let data = if B::F64_VEC {
@@ -2144,7 +2205,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::f64)
                 };
-                Ok(Self::F64(data))
+                Ok(Self::F64(data.into()))
             }
             (Self::U32(lhs), Self::U32(rhs)) => {
                 let data = if B::U32_VEC {
@@ -2152,7 +2213,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::u32)
                 };
-                Ok(Self::U32(data))
+                Ok(Self::U32(data.into()))
             }
             (Self::I64(lhs), Self::I64(rhs)) => {
                 let data = if B::I64_VEC {
@@ -2160,7 +2221,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::i64)
                 };
-                Ok(Self::I64(data))
+                Ok(Self::I64(data.into()))
             }
             (Self::U8(lhs), Self::U8(rhs)) => {
                 let data = if B::U8_VEC {
@@ -2168,7 +2229,7 @@ impl BackendStorage for CpuStorage {
                 } else {
                     binary_map(lhs_l, rhs_l, lhs, rhs, B::u8)
                 };
-                Ok(Self::U8(data))
+                Ok(Self::U8(data.into()))
             }
             _ => {
                 // This should be covered by the dtype check above.
@@ -2621,7 +2682,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(rng.sample::<bf16, _>(uniform))
                 }
-                Ok(CpuStorage::BF16(data))
+                Ok(CpuStorage::BF16(data.into()))
             }
             DType::F16 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2630,7 +2691,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(rng.sample::<f16, _>(uniform))
                 }
-                Ok(CpuStorage::F16(data))
+                Ok(CpuStorage::F16(data.into()))
             }
             DType::F32 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2639,7 +2700,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(rng.sample::<f32, _>(uniform))
                 }
-                Ok(CpuStorage::F32(data))
+                Ok(CpuStorage::F32(data.into()))
             }
             DType::F64 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2647,7 +2708,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(rng.sample::<f64, _>(uniform))
                 }
-                Ok(CpuStorage::F64(data))
+                Ok(CpuStorage::F64(data.into()))
             }
         }
     }
@@ -2668,7 +2729,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(normal.sample(&mut rng))
                 }
-                Ok(CpuStorage::BF16(data))
+                Ok(CpuStorage::BF16(data.into()))
             }
             DType::F16 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2677,7 +2738,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(normal.sample(&mut rng))
                 }
-                Ok(CpuStorage::F16(data))
+                Ok(CpuStorage::F16(data.into()))
             }
             DType::F32 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2686,7 +2747,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(normal.sample(&mut rng))
                 }
-                Ok(CpuStorage::F32(data))
+                Ok(CpuStorage::F32(data.into()))
             }
             DType::F64 => {
                 let mut data = Vec::with_capacity(elem_count);
@@ -2694,7 +2755,7 @@ impl BackendDevice for CpuDevice {
                 for _i in 0..elem_count {
                     data.push(normal.sample(&mut rng))
                 }
-                Ok(CpuStorage::F64(data))
+                Ok(CpuStorage::F64(data.into()))
             }
         }
     }
@@ -2710,37 +2771,37 @@ impl BackendDevice for CpuDevice {
             DType::U8 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::U8(v)
+                CpuStorage::U8(v.into())
             }
             DType::U32 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::U32(v)
+                CpuStorage::U32(v.into())
             }
             DType::I64 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::I64(v)
+                CpuStorage::I64(v.into())
             }
             DType::BF16 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::BF16(v)
+                CpuStorage::BF16(v.into())
             }
             DType::F16 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::F16(v)
+                CpuStorage::F16(v.into())
             }
             DType::F32 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::F32(v)
+                CpuStorage::F32(v.into())
             }
             DType::F64 => {
                 let mut v = Vec::with_capacity(elem_count);
                 v.set_len(elem_count);
-                CpuStorage::F64(v)
+                CpuStorage::F64(v.into())
             }
         };
         Ok(storage)
@@ -2749,13 +2810,13 @@ impl BackendDevice for CpuDevice {
     fn zeros_impl(&self, shape: &Shape, dtype: DType) -> Result<CpuStorage> {
         let elem_count = shape.elem_count();
         let storage = match dtype {
-            DType::U8 => CpuStorage::U8(vec![0u8; elem_count]),
-            DType::U32 => CpuStorage::U32(vec![0u32; elem_count]),
-            DType::I64 => CpuStorage::I64(vec![0i64; elem_count]),
-            DType::BF16 => CpuStorage::BF16(vec![bf16::ZERO; elem_count]),
-            DType::F16 => CpuStorage::F16(vec![f16::ZERO; elem_count]),
-            DType::F32 => CpuStorage::F32(vec![0f32; elem_count]),
-            DType::F64 => CpuStorage::F64(vec![0f64; elem_count]),
+            DType::U8 => CpuStorage::U8(vec![0u8; elem_count].into()),
+            DType::U32 => CpuStorage::U32(vec![0u32; elem_count].into()),
+            DType::I64 => CpuStorage::I64(vec![0i64; elem_count].into()),
+            DType::BF16 => CpuStorage::BF16(vec![bf16::ZERO; elem_count].into()),
+            DType::F16 => CpuStorage::F16(vec![f16::ZERO; elem_count].into()),
+            DType::F32 => CpuStorage::F32(vec![0f32; elem_count].into()),
+            DType::F64 => CpuStorage::F64(vec![0f64; elem_count].into()),
         };
         Ok(storage)
     }
