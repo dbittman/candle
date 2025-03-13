@@ -227,12 +227,12 @@ fn main() -> Result<()> {
             .split(',')
             .map(std::path::PathBuf::from)
             .collect::<Vec<_>>(),
-        None => candle_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
-        /*
+        //None => candle_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?,
         None => candle_examples::hub_load_local_safetensors(
-            "mixtral-model/snapshots/ffe1a706bacbd5abddc5ff99432ee38f7e0662fb",
+            //"mixtral-model/snapshots/ffe1a706bacbd5abddc5ff99432ee38f7e0662fb",
+            "shard_dir",
             "model.safetensors.index.json",
-        )?,*/
+        )?,
     };
     println!("retrieved the files in {:?}", start.elapsed());
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
