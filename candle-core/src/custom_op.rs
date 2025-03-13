@@ -386,7 +386,7 @@ pub struct UgIOp1 {
 
 impl UgIOp1 {
     #[allow(unused)]
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "twizzler")))]
     pub fn new(
         name: &'static str,
         kernel: ug::lang::ssa::Kernel,

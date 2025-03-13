@@ -172,7 +172,7 @@ pub enum Error {
     #[error("Metal error {0}")]
     Metal(#[from] MetalError),
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", target_os = "twizzler")))]
     #[error(transparent)]
     Ug(#[from] ug::Error),
 
