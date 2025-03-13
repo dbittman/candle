@@ -9,7 +9,7 @@ members = [
     "candle-transformers",
     "candle-wasm-examples/*",
     "candle-wasm-tests",
-    "tensor-tools",
+    "tensor-tools", "twz-candle",
 ]
 exclude = [
    "candle-flash-attn",
