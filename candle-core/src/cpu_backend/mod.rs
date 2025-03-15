@@ -2588,6 +2588,7 @@ impl BackendDevice for CpuDevice {
 
     fn rand_normal(&self, shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<CpuStorage> {
         use rand::prelude::*;
+        use rand_distr::Distribution;
 
         let elem_count = shape.elem_count();
         let mut rng = rand::rng();
