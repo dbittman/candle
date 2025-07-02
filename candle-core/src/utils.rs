@@ -32,6 +32,10 @@ pub fn with_avx() -> bool {
     cfg!(target_feature = "avx")
 }
 
+pub fn with_avx512() -> bool {
+    cfg!(target_feature = "avx512f")
+}
+
 pub fn with_neon() -> bool {
     cfg!(target_feature = "neon")
 }

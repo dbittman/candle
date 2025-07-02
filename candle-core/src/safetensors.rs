@@ -372,6 +372,7 @@ impl MmapedSafetensors {
             let p = p.as_ref();
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
             let file = memmap2::MmapOptions::new()
+                .populate()
                 .map(&file)
                 .map_err(|e| Error::from(e).with_path(p))?;
             tracing::debug!("mmap: {:?} => {:p}", p, file.as_ptr());
