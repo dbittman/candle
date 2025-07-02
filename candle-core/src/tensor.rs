@@ -527,6 +527,17 @@ impl Tensor {
         Ok(from_storage(storage, shape, none, false))
     }
 
+    pub fn from_slice_static<S: ShapeWithOneHole, D: crate::WithDType>(
+        array: &'static [D],
+        shape: S,
+        device: &Device,
+    ) -> Result<Self> {
+        let shape = shape.into_shape(array.len())?;
+        let storage = device.storage_from_static_slice(array)?;
+        let none = BackpropOp::none();
+        Ok(from_storage(storage, shape, none, false))
+    }
+
     pub(crate) fn same_shape_binary_op(&self, rhs: &Self, op: &'static str) -> Result<&Shape> {
         let lhs = self.shape();
         let rhs = rhs.shape();

@@ -23,6 +23,8 @@ pub trait NdArray {
     fn shape(&self) -> Result<Shape>;
 
     fn to_cpu_storage(&self) -> CpuStorage;
+
+    fn to_cpu_storage_static(&self) -> CpuStorage;
 }
 
 impl<S: WithDType> NdArray for S {
@@ -31,7 +33,11 @@ impl<S: WithDType> NdArray for S {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
-        S::to_cpu_storage(&[*self])
+        S::to_cpu_storage(&[*self], false)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        S::to_cpu_storage(&[*self], true)
     }
 }
 
@@ -41,7 +47,11 @@ impl<S: WithDType, const N: usize> NdArray for &[S; N] {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
-        S::to_cpu_storage(self.as_slice())
+        S::to_cpu_storage(self.as_slice(), false)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        S::to_cpu_storage(self.as_slice(), true)
     }
 }
 
@@ -51,7 +61,11 @@ impl<S: WithDType> NdArray for &[S] {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
-        S::to_cpu_storage(self)
+        S::to_cpu_storage(self, false)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        S::to_cpu_storage(self, true)
     }
 }
 
@@ -61,6 +75,10 @@ impl<S: WithDType, const N: usize, const M: usize> NdArray for &[[S; N]; M] {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
+        S::to_cpu_storage_owned(self.concat())
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
         S::to_cpu_storage_owned(self.concat())
     }
 }
@@ -73,6 +91,16 @@ impl<S: WithDType, const N1: usize, const N2: usize, const N3: usize> NdArray
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
+        let mut vec = Vec::with_capacity(N1 * N2 * N3);
+        for i1 in 0..N1 {
+            for i2 in 0..N2 {
+                vec.extend(self[i1][i2])
+            }
+        }
+        S::to_cpu_storage_owned(vec)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
         let mut vec = Vec::with_capacity(N1 * N2 * N3);
         for i1 in 0..N1 {
             for i2 in 0..N2 {
@@ -101,6 +129,18 @@ impl<S: WithDType, const N1: usize, const N2: usize, const N3: usize, const N4: 
         }
         S::to_cpu_storage_owned(vec)
     }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        let mut vec = Vec::with_capacity(N1 * N2 * N3 * N4);
+        for i1 in 0..N1 {
+            for i2 in 0..N2 {
+                for i3 in 0..N3 {
+                    vec.extend(self[i1][i2][i3])
+                }
+            }
+        }
+        S::to_cpu_storage_owned(vec)
+    }
 }
 
 impl<S: WithDType> NdArray for Vec<S> {
@@ -109,7 +149,11 @@ impl<S: WithDType> NdArray for Vec<S> {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
-        S::to_cpu_storage(self.as_slice())
+        S::to_cpu_storage(self.as_slice(), false)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        S::to_cpu_storage(self.as_slice(), false)
     }
 }
 
@@ -132,6 +176,11 @@ impl<S: WithDType> NdArray for Vec<&[S]> {
         let data = self.iter().copied().flatten().copied().collect::<Vec<_>>();
         S::to_cpu_storage_owned(data)
     }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        let data = self.iter().copied().flatten().copied().collect::<Vec<_>>();
+        S::to_cpu_storage_owned(data)
+    }
 }
 
 impl<S: WithDType> NdArray for Vec<Vec<S>> {
@@ -150,6 +199,15 @@ impl<S: WithDType> NdArray for Vec<Vec<S>> {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
+        let len: usize = self.iter().map(|v| v.len()).sum();
+        let mut dst = Vec::with_capacity(len);
+        for v in self.iter() {
+            dst.extend(v.iter().copied());
+        }
+        S::to_cpu_storage_owned(dst)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
         let len: usize = self.iter().map(|v| v.len()).sum();
         let mut dst = Vec::with_capacity(len);
         for v in self.iter() {
@@ -191,6 +249,23 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<S>>> {
         }
         S::to_cpu_storage_owned(dst)
     }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
+        if self.is_empty() {
+            return S::to_cpu_storage_owned(vec![]);
+        }
+        let len: usize = self
+            .iter()
+            .map(|v| v.iter().map(|v| v.len()).sum::<usize>())
+            .sum();
+        let mut dst = Vec::with_capacity(len);
+        for v1 in self.iter() {
+            for v2 in v1.iter() {
+                dst.extend(v2.iter().copied());
+            }
+        }
+        S::to_cpu_storage_owned(dst)
+    }
 }
 
 impl<S: WithDType> NdArray for Vec<Vec<Vec<Vec<S>>>> {
@@ -210,6 +285,26 @@ impl<S: WithDType> NdArray for Vec<Vec<Vec<Vec<S>>>> {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
+        let len: usize = self
+            .iter()
+            .map(|v| {
+                v.iter()
+                    .map(|v| v.iter().map(|v| v.len()).sum::<usize>())
+                    .sum::<usize>()
+            })
+            .sum();
+        let mut dst = Vec::with_capacity(len);
+        for v1 in self.iter() {
+            for v2 in v1.iter() {
+                for v3 in v2.iter() {
+                    dst.extend(v3.iter().copied());
+                }
+            }
+        }
+        S::to_cpu_storage_owned(dst)
+    }
+
+    fn to_cpu_storage_static(&self) -> CpuStorage {
         let len: usize = self
             .iter()
             .map(|v| {
@@ -425,6 +520,23 @@ impl Device {
             }
             Device::Metal(device) => {
                 let storage = device.alloc_uninit(shape, dtype)?;
+                Ok(Storage::Metal(storage))
+            }
+        }
+    }
+
+    pub(crate) fn storage_from_static_slice<D: WithDType>(
+        &self,
+        data: &'static [D],
+    ) -> Result<Storage> {
+        match self {
+            Device::Cpu => Ok(Storage::Cpu(data.to_cpu_storage_static())),
+            Device::Cuda(device) => {
+                let storage = device.storage_from_slice(data)?;
+                Ok(Storage::Cuda(storage))
+            }
+            Device::Metal(device) => {
+                let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Metal(storage))
             }
         }

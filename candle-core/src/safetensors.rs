@@ -99,14 +99,43 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
     let size_in_bytes = T::DTYPE.size_in_bytes();
     let elem_count = data.len() / size_in_bytes;
     if (data.as_ptr() as usize) % size_in_bytes == 0 {
-        tracing::debug!("alignment good");
         // SAFETY This is safe because we just checked that this
         // was correctly aligned.
         let data: &[T] =
             unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
         Tensor::from_slice(data, shape, device)
     } else {
-        tracing::debug!("alignment bad");
+        tracing::warn!("alignment bad");
+        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
+        // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
+        let mut c: Vec<T> = Vec::with_capacity(elem_count);
+        // SAFETY: We just created c, so the allocated memory is necessarily
+        // contiguous and non overlapping with the view's data.
+        // We're downgrading the `c` pointer from T to u8, which removes alignment
+        // constraints.
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), c.as_mut_ptr() as *mut u8, data.len());
+            c.set_len(elem_count)
+        }
+        Tensor::from_slice(&c, shape, device)
+    }
+}
+
+fn convert_slice_static<T: WithDType>(
+    data: &'static [u8],
+    shape: &[usize],
+    device: &Device,
+) -> Result<Tensor> {
+    let size_in_bytes = T::DTYPE.size_in_bytes();
+    let elem_count = data.len() / size_in_bytes;
+    if (data.as_ptr() as usize) % size_in_bytes == 0 {
+        // SAFETY This is safe because we just checked that this
+        // was correctly aligned.
+        let data: &[T] =
+            unsafe { std::slice::from_raw_parts(data.as_ptr() as *const T, elem_count) };
+        Tensor::from_slice_static(data, shape, device)
+    } else {
+        tracing::warn!("alignment bad");
         // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
         // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
@@ -138,6 +167,7 @@ fn convert_slice_with_cast<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>
         let data = data.iter().map(|t| conv(*t)).collect::<Result<Vec<_>>>()?;
         Tensor::from_vec(data, shape, device)
     } else {
+        tracing::warn!("(wc) alignment bad");
         // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
         // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
@@ -164,6 +194,13 @@ fn convert_with_cast_<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>(
 
 fn convert_<T: WithDType>(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
     convert_slice::<T>(view.data(), view.shape(), device)
+}
+
+fn convert_static_<T: WithDType>(
+    view: &st::TensorView<'static>,
+    device: &Device,
+) -> Result<Tensor> {
+    convert_slice_static::<T>(view.data(), view.shape(), device)
 }
 
 fn convert_back_<T: WithDType>(mut vs: Vec<T>) -> Vec<u8> {
@@ -227,6 +264,28 @@ fn convert(view: &st::TensorView<'_>, device: &Device) -> Result<Tensor> {
         st::Dtype::F16 => convert_::<half::f16>(view, device),
         st::Dtype::F32 => convert_::<f32>(view, device),
         st::Dtype::F64 => convert_::<f64>(view, device),
+        dtype => Err(Error::UnsupportedSafeTensorDtype(dtype)),
+    }
+}
+
+fn convert_static(view: &st::TensorView<'static>, device: &Device) -> Result<Tensor> {
+    tracing::debug!("==> convert-static: {:?}", view.dtype());
+    match view.dtype() {
+        st::Dtype::U8 => convert_static_::<u8>(view, device),
+        st::Dtype::U16 => {
+            let conv = |x| Ok(u32::from(x));
+            convert_with_cast_::<u16, u32, _>(view, device, conv)
+        }
+        st::Dtype::U32 => convert_static_::<u32>(view, device),
+        st::Dtype::I32 => {
+            let conv = |x| Ok(i64::from(x));
+            convert_with_cast_::<i32, i64, _>(view, device, conv)
+        }
+        st::Dtype::I64 => convert_static_::<i64>(view, device),
+        st::Dtype::BF16 => convert_static_::<half::bf16>(view, device),
+        st::Dtype::F16 => convert_static_::<half::f16>(view, device),
+        st::Dtype::F32 => convert_static_::<f32>(view, device),
+        st::Dtype::F64 => convert_static_::<f64>(view, device),
         dtype => Err(Error::UnsupportedSafeTensorDtype(dtype)),
     }
 }
@@ -311,11 +370,11 @@ impl MmapedSafetensors {
         let mut safetensors = vec![];
         for (index, p) in paths.iter().enumerate() {
             let p = p.as_ref();
-            tracing::debug!("mmap: {:?}", p);
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
             let file = memmap2::MmapOptions::new()
                 .map(&file)
                 .map_err(|e| Error::from(e).with_path(p))?;
+            tracing::debug!("mmap: {:?} => {:p}", p, file.as_ptr());
             let data = yoke::Yoke::<SafeTensors_<'static>, memmap2::Mmap>::try_attach_to_cart(
                 file,
                 |data: &[u8]| {
@@ -339,9 +398,10 @@ impl MmapedSafetensors {
 
     pub fn load(&self, name: &str, dev: &Device) -> Result<Tensor> {
         tracing::debug!("LOAD: get");
-        let g = self.get(name)?;
+        let g = self.get_static(name)?;
         tracing::debug!("LOAD: load");
-        let r = g.load(dev);
+        //let r = g.load(dev);
+        let r = convert_static(&g, dev);
         tracing::debug!("LOAD: done");
         r
     }
@@ -374,6 +434,28 @@ impl MmapedSafetensors {
         let r = x.tensor(name)?;
         tracing::debug!("tensor - done");
         Ok(r)
+    }
+
+    pub fn get_static(&self, name: &str) -> Result<st::TensorView<'static>> {
+        tracing::debug!("-> get");
+        let index = match &self.routing {
+            None => 0,
+            Some(routing) => {
+                let index = routing.get(name).ok_or_else(|| {
+                    Error::CannotFindTensor {
+                        path: name.to_string(),
+                    }
+                    .bt()
+                })?;
+                *index
+            }
+        };
+        tracing::debug!("-> get[{}]", index);
+        let x = &self.safetensors[index].get().0;
+        tracing::debug!("tensor");
+        let r = x.tensor(name)?;
+        tracing::debug!("tensor - done");
+        Ok(unsafe { std::mem::transmute(r) })
     }
 }
 

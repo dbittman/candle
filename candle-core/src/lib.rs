@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 //! ML framework for Rust
 //!
 //! ```rust

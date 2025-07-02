@@ -16,20 +16,38 @@ const USE_IM2COL_CONV1D: bool = true;
 const USE_COL2IM_CONV1D_TR: bool = true;
 const USE_IM2COL_CONV2D: bool = true;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MyVec<T>(ManuallyDrop<std::vec::Vec<T>>);
 
 impl<T> MyVec<T> {
     fn from_slice_hack(slice: &[T]) -> Self {
-        tracing::warn!("doing slice hack");
+        tracing::debug!(
+            "doing slice hack for {}, {:p} {}",
+            std::any::type_name::<T>(),
+            slice.as_ptr(),
+            slice.len()
+        );
         Self(ManuallyDrop::new(unsafe {
             Vec::from_raw_parts(slice.as_ptr() as *mut T, slice.len(), slice.len())
         }))
     }
 }
 
+impl<T> Clone for MyVec<T> {
+    fn clone(&self) -> Self {
+        tracing::warn!("MyVec Clone");
+        Self::from_slice_hack(self)
+    }
+}
+
 impl<T> AsRef<std::vec::Vec<T>> for MyVec<T> {
     fn as_ref(&self) -> &std::vec::Vec<T> {
+        &self.0
+    }
+}
+
+impl<T> AsRef<[T]> for MyVec<T> {
+    fn as_ref(&self) -> &[T] {
         &self.0
     }
 }
@@ -51,11 +69,6 @@ impl<T> std::ops::DerefMut for MyVec<T> {
 impl<T> From<Vec<T>> for MyVec<T> {
     fn from(value: Vec<T>) -> Self {
         Self(ManuallyDrop::new(value))
-    }
-}
-impl<T> From<MyVec<T>> for Vec<T> {
-    fn from(value: MyVec<T>) -> Self {
-        ManuallyDrop::into_inner(value.0)
     }
 }
 
@@ -2647,7 +2660,7 @@ impl BackendDevice for CpuDevice {
     }
 
     fn storage_from_slice<T: crate::WithDType>(&self, s: &[T]) -> Result<Self::Storage> {
-        Ok(T::to_cpu_storage(s))
+        Ok(T::to_cpu_storage(s, false))
     }
 
     fn storage_from_cpu_storage(&self, s: &CpuStorage) -> Result<Self::Storage> {
@@ -2714,7 +2727,6 @@ impl BackendDevice for CpuDevice {
     }
 
     fn rand_normal(&self, shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<CpuStorage> {
-        use rand::prelude::*;
         use rand_distr::Distribution;
 
         let elem_count = shape.elem_count();

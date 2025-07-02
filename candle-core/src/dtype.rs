@@ -111,14 +111,15 @@ pub trait WithDType:
     fn cpu_storage_ref(data: &[Self]) -> CpuStorageRef<'_>;
     fn to_cpu_storage_owned(data: Vec<Self>) -> CpuStorage;
 
-    fn to_cpu_storage(data: &[Self]) -> CpuStorage {
-        tracing::debug!(
-            "==> to_cpu_storage copy: {}: {} KB",
+    fn to_cpu_storage(data: &[Self], s: bool) -> CpuStorage {
+        tracing::trace!(
+            "==> to_cpu_storage copy: {}: {} KB ==> {}",
             data.len(),
-            data.len() * std::mem::size_of::<Self>() / 1024
+            data.len() * std::mem::size_of::<Self>() / 1024,
+            s
         );
 
-        if data.len() > 1000000 {
+        if s {
             CpuStorage::from_slice_hack(data)
         } else {
             Self::to_cpu_storage_owned(data.to_vec())
@@ -155,8 +156,13 @@ macro_rules! with_dtype {
             }
 
             fn cpu_storage_data(s: CpuStorage) -> Result<Vec<Self>> {
+                tracing::warn!("cpu_storage_data");
                 match s {
-                    CpuStorage::$dtype(data) => Ok(data.into()),
+                    CpuStorage::$dtype(data) => Ok({
+                        let slice = data.as_slice();
+                        let data = Vec::from(slice);
+                        data.into()
+                    }),
                     _ => Err(Error::UnexpectedDType {
                         expected: DType::$dtype,
                         got: s.dtype(),
