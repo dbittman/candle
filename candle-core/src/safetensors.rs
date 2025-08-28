@@ -372,7 +372,7 @@ impl MmapedSafetensors {
         let mut safetensors = vec![];
         for (index, p) in paths.iter().enumerate() {
             let p = p.as_ref();
-            tracing::info!("load: {}", p.display());
+            tracing::debug!("load: {}", p.display());
             let start = std::time::Instant::now();
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
             let done_file = std::time::Instant::now();
@@ -396,7 +396,7 @@ impl MmapedSafetensors {
                 routing.insert(k.to_string(), index);
             }
             let done_load = std::time::Instant::now();
-            tracing::info!(
+            tracing::debug!(
                 "  => file: {}ms, map: {}ms, load: {}ms",
                 (done_file - start).as_millis(),
                 (done_map - done_file).as_millis(),
