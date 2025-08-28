@@ -3,11 +3,12 @@
 //! A `VarBuilder` is used to retrieve variables used by a model. These variables can either come
 //! from a pre-trained checkpoint, e.g. using `VarBuilder::from_mmaped_safetensors`, or initialized
 //! for training, e.g. using `VarBuilder::from_varmap`.
-use crate::VarMap;
-use candle::{safetensors::Load, DType, Device, Error, Result, Shape, Tensor};
+use std::{collections::HashMap, sync::Arc};
+
+use candle::{DType, Device, Error, Result, Shape, Tensor, safetensors::Load};
 use safetensors::{slice::IndexOp, tensor::SafeTensors};
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::VarMap;
 
 /// A structure used to retrieve variables, these variables can either come from storage or be
 /// generated via some form of initialization.
@@ -525,7 +526,11 @@ impl<'a> VarBuilder<'a> {
     ) -> Result<Self> {
         let tensors = candle::safetensors::MmapedSafetensors::multi(paths)?;
         tracing::debug!("Done with ::multi");
-        Ok(Self::from_backend(Box::new(tensors), dtype, dev.clone()))
+        let start = std::time::Instant::now();
+        let b = Self::from_backend(Box::new(tensors), dtype, dev.clone());
+        let end = std::time::Instant::now();
+        tracing::info!("from_backend took {}ms", (end - start).as_millis());
+        Ok(b)
     }
 
     /// Initializes a `VarBuilder` from a binary buffer in the safetensor format.
@@ -566,19 +571,21 @@ impl<'a> VarBuilder<'a> {
     /// passing the new names to the inner VarBuilder.
     ///
     /// ```rust
-    /// use candle::{Tensor, DType, Device};
+    /// use candle::{DType, Device, Tensor};
     ///
     /// let a = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
-    /// let tensors: std::collections::HashMap<_, _> = [
-    ///     ("foo".to_string(), a),
-    /// ]
-    /// .into_iter()
-    /// .collect();
+    /// let tensors: std::collections::HashMap<_, _> = [("foo".to_string(), a)].into_iter().collect();
     /// let vb = candle_nn::VarBuilder::from_tensors(tensors, DType::F32, &Device::Cpu);
     /// assert!(vb.contains_tensor("foo"));
     /// assert!(vb.get((2, 3), "foo").is_ok());
     /// assert!(!vb.contains_tensor("bar"));
-    /// let vb = vb.rename_f(|f: &str| if f == "bar" { "foo".to_string() } else { f.to_string() });
+    /// let vb = vb.rename_f(|f: &str| {
+    ///     if f == "bar" {
+    ///         "foo".to_string()
+    ///     } else {
+    ///         f.to_string()
+    ///     }
+    /// });
     /// assert!(vb.contains_tensor("bar"));
     /// assert!(vb.contains_tensor("foo"));
     /// assert!(vb.get((2, 3), "bar").is_ok());
