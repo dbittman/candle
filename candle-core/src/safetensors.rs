@@ -8,13 +8,11 @@
 //!
 //! Tensors can also be serialized to safetensor format using the `save` function or
 //! `Tensor::save_safetensors` method.
-//!
+use std::{borrow::Cow, collections::HashMap, path::Path};
+
+use safetensors::{tensor as st, tensor::SafeTensors};
+
 use crate::{DType, Device, Error, Result, Tensor, WithDType};
-use safetensors::tensor as st;
-use safetensors::tensor::SafeTensors;
-use std::borrow::Cow;
-use std::collections::HashMap;
-use std::path::Path;
 
 impl From<DType> for st::Dtype {
     fn from(value: DType) -> Self {
@@ -106,8 +104,9 @@ fn convert_slice<T: WithDType>(data: &[u8], shape: &[usize], device: &Device) ->
         Tensor::from_slice(data, shape, device)
     } else {
         tracing::warn!("alignment bad");
-        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
-        // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
+        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the
+        // following cast Making this vector too small to fit a full f16/f32/f64 weights,
+        // resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
         // SAFETY: We just created c, so the allocated memory is necessarily
         // contiguous and non overlapping with the view's data.
@@ -136,8 +135,9 @@ fn convert_slice_static<T: WithDType>(
         Tensor::from_slice_static(data, shape, device)
     } else {
         tracing::warn!("alignment bad");
-        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
-        // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
+        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the
+        // following cast Making this vector too small to fit a full f16/f32/f64 weights,
+        // resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
         // SAFETY: We just created c, so the allocated memory is necessarily
         // contiguous and non overlapping with the view's data.
@@ -168,8 +168,9 @@ fn convert_slice_with_cast<T: Sized + Copy, U: WithDType, F: Fn(T) -> Result<U>>
         Tensor::from_vec(data, shape, device)
     } else {
         tracing::warn!("(wc) alignment bad");
-        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the following cast
-        // Making this vector too small to fit a full f16/f32/f64 weights, resulting in out-of-bounds access
+        // XXX: We need to specify `T` here, otherwise the compiler will infer u8 because of the
+        // following cast Making this vector too small to fit a full f16/f32/f64 weights,
+        // resulting in out-of-bounds access
         let mut c: Vec<T> = Vec::with_capacity(elem_count);
         // SAFETY: We just created c, so the allocated memory is necessarily
         // contiguous and non overlapping with the view's data.
@@ -358,7 +359,8 @@ impl MmapedSafetensors {
         })
     }
 
-    /// Creates a wrapper around multiple memory mapped file and deserialize the safetensors headers.
+    /// Creates a wrapper around multiple memory mapped file and deserialize the safetensors
+    /// headers.
     ///
     /// If a tensor name appears in multiple files, the last entry is returned.
     ///
@@ -370,11 +372,15 @@ impl MmapedSafetensors {
         let mut safetensors = vec![];
         for (index, p) in paths.iter().enumerate() {
             let p = p.as_ref();
+            tracing::info!("load: {}", p.display());
+            let start = std::time::Instant::now();
             let file = std::fs::File::open(p).map_err(|e| Error::from(e).with_path(p))?;
+            let done_file = std::time::Instant::now();
             let file = memmap2::MmapOptions::new()
                 .populate()
                 .map(&file)
                 .map_err(|e| Error::from(e).with_path(p))?;
+            let done_map = std::time::Instant::now();
             tracing::debug!("mmap: {:?} => {:p}", p, file.as_ptr());
             let data = yoke::Yoke::<SafeTensors_<'static>, memmap2::Mmap>::try_attach_to_cart(
                 file,
@@ -389,6 +395,13 @@ impl MmapedSafetensors {
                 tracing::debug!("route add {}", k);
                 routing.insert(k.to_string(), index);
             }
+            let done_load = std::time::Instant::now();
+            tracing::info!(
+                "  => file: {}ms, map: {}ms, load: {}ms",
+                (done_file - start).as_millis(),
+                (done_map - done_file).as_millis(),
+                (done_load - done_map).as_millis()
+            );
             safetensors.push(data)
         }
         Ok(Self {
@@ -547,8 +560,9 @@ impl MmapedFile {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn save_single_tensor() {
