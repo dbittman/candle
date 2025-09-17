@@ -49,7 +49,7 @@ impl<T: Clone> MyVec<T> {
 }
 
 #[cfg(target_os = "macos")]
-impl<T> Clone for MyVec<T> {
+impl<T: Clone> Clone for MyVec<T> {
     fn clone(&self) -> Self {
         Self(ManuallyDrop::new(self.0.as_slice().to_vec()))
     }
