@@ -77,7 +77,7 @@ impl<T> AsRef<[T]> for MyVec<T> {
 #[cfg(target_os = "macos")]
 impl<T> Drop for MyVec<T> {
     fn drop(&mut self) {
-        ManuallyDrop::drop(&mut self.0)
+        unsafe { ManuallyDrop::drop(&mut self.0) }
     }
 }
 
