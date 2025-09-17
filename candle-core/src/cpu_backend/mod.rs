@@ -22,7 +22,7 @@ const USE_IM2COL_CONV2D: bool = true;
 #[derive(Debug)]
 pub struct MyVec<T>(ManuallyDrop<std::vec::Vec<T>>);
 
-impl<T> MyVec<T> {
+impl<T: Clone> MyVec<T> {
     #[cfg(not(target_os = "macos"))]
     fn from_slice_hack(slice: &[T]) -> Self {
         tracing::debug!(
@@ -51,7 +51,7 @@ impl<T> MyVec<T> {
 #[cfg(target_os = "macos")]
 impl<T> Clone for MyVec<T> {
     fn clone(&self) -> Self {
-        Self(ManuallyDrop::new(self.0.into().clone()))
+        Self(ManuallyDrop::new(self.0.as_slice().to_vec()))
     }
 }
 
