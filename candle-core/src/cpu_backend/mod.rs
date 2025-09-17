@@ -56,7 +56,7 @@ impl<T: Clone> Clone for MyVec<T> {
 }
 
 #[cfg(not(target_os = "macos"))]
-impl<T> Clone for MyVec<T> {
+impl<T: Clone> Clone for MyVec<T> {
     fn clone(&self) -> Self {
         Self::from_slice_hack(self)
     }
