@@ -74,6 +74,13 @@ impl<T> AsRef<[T]> for MyVec<T> {
     }
 }
 
+#[cfg(target_os = "macos")]
+impl Drop for MyVec<T> {
+    fn drop(&mut self) {
+        ManuallyDrop::drop(&mut self.0)
+    }
+}
+
 impl<T> std::ops::Deref for MyVec<T> {
     type Target = std::vec::Vec<T>;
 
