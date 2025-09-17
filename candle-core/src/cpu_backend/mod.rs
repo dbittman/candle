@@ -35,12 +35,23 @@ impl<T> MyVec<T> {
             Vec::from_raw_parts(slice.as_ptr() as *mut T, slice.len(), slice.len())
         }))
     }
+
+    #[cfg(target_os = "macos")]
+    fn from_slice_hack(slice: &[T]) -> Self {
+        tracing::debug!(
+            "doing slice hack for {}, {:p} {}",
+            std::any::type_name::<T>(),
+            slice.as_ptr(),
+            slice.len()
+        );
+        Self(ManuallyDrop::new(slice.to_vec()))
+    }
 }
 
 #[cfg(target_os = "macos")]
 impl<T> Clone for MyVec<T> {
     fn clone(&self) -> Self {
-        Self(self.0.clone())
+        Self(ManuallyDrop::new(self.0.into().clone()))
     }
 }
 
