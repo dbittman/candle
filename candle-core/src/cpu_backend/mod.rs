@@ -1,15 +1,18 @@
 //! Implementation of Backend Fns for CPU
 use std::mem::ManuallyDrop;
 
-use crate::backend::{BackendDevice, BackendStorage};
-use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{DType, Error, IntDType, Layout, Result, Shape, WithDType};
 use half::{bf16, f16};
 use rayon::prelude::*;
 
+use crate::{
+    DType, Error, IntDType, Layout, Result, Shape, WithDType,
+    backend::{BackendDevice, BackendStorage},
+    op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT},
+};
+
 mod utils;
 pub use utils::{
-    binary_map, binary_map_vec, unary_map, unary_map_vec, Map1, Map1Any, Map2, Map2InPlace, Map2U8,
+    Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
 };
 
 const USE_IM2COL_CONV1D: bool = true;
@@ -20,6 +23,7 @@ const USE_IM2COL_CONV2D: bool = true;
 pub struct MyVec<T>(ManuallyDrop<std::vec::Vec<T>>);
 
 impl<T> MyVec<T> {
+    #[cfg(not(target_os = "macos"))]
     fn from_slice_hack(slice: &[T]) -> Self {
         tracing::debug!(
             "doing slice hack for {}, {:p} {}",
@@ -33,9 +37,16 @@ impl<T> MyVec<T> {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl<T> Clone for MyVec<T> {
     fn clone(&self) -> Self {
-        tracing::warn!("MyVec Clone");
+        Self(self.0.clone())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl<T> Clone for MyVec<T> {
+    fn clone(&self) -> Self {
         Self::from_slice_hack(self)
     }
 }
@@ -1230,8 +1241,9 @@ impl Map2 for Conv2D<'_> {
                                     T::vec_dot(inp_cont.as_ptr(), k_cont.as_ptr(), &mut d, p.c_in)
                                 }
                                 let dst_p = dst.as_ptr();
-                                // Safety: dst_idx are uniques per dst_c_idx which is used to parallelise
-                                // the different tasks so no two threads can try to write at the same
+                                // Safety: dst_idx are uniques per dst_c_idx which is used to
+                                // parallelise the different tasks
+                                // so no two threads can try to write at the same
                                 // location.
                                 unsafe {
                                     let ptr = dst_p.add(dst_idx) as *mut T;
@@ -1387,7 +1399,7 @@ impl Map2 for MatMul {
         rhs: &[T],
         rhs_l: &Layout,
     ) -> Result<Vec<T>> {
-        use gemm::{gemm, Parallelism};
+        use gemm::{Parallelism, gemm};
 
         match T::DTYPE {
             DType::F16 | DType::F32 | DType::F64 => {}
@@ -1997,8 +2009,8 @@ impl BackendStorage for CpuStorage {
                 }
                 let dst_shape = Shape::from(dst_dims);
                 let mut reduce_dims = reduce_dims.to_vec();
-                // Sort the reduce_dims as they have to be processed from left to right when converting the
-                // indexes.
+                // Sort the reduce_dims as they have to be processed from left to right when
+                // converting the indexes.
                 reduce_dims.sort();
                 let reduce_dims_and_stride: Vec<_> = reduce_dims
                     .iter()
