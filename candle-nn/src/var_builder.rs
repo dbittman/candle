@@ -529,7 +529,7 @@ impl<'a> VarBuilder<'a> {
         let start = std::time::Instant::now();
         let b = Self::from_backend(Box::new(tensors), dtype, dev.clone());
         let end = std::time::Instant::now();
-        tracing::info!("from_backend took {}ms", (end - start).as_millis());
+        //tracing::info!("from_backend took {}ms", (end - start).as_millis());
         Ok(b)
     }
 
