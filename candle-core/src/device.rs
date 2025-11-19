@@ -1,5 +1,6 @@
 use crate::backend::BackendDevice;
 use crate::cpu_backend::CpuDevice;
+use crate::memos_backend::MemOSStorage;
 use crate::{CpuStorage, DType, Result, Shape, Storage, WithDType};
 
 /// A `DeviceLocation` represents a physical device whereas multiple `Device`
@@ -7,6 +8,7 @@ use crate::{CpuStorage, DType, Result, Shape, Storage, WithDType};
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum DeviceLocation {
     Cpu,
+    MemOS,
     Cuda { gpu_id: usize },
     Metal { gpu_id: usize },
 }
@@ -17,6 +19,7 @@ pub enum Device {
     Cpu,
     Cuda(crate::CudaDevice),
     Metal(crate::MetalDevice),
+    MemOS,
 }
 
 pub trait NdArray {
@@ -335,6 +338,7 @@ impl Device {
             Self::Cuda(d) => Ok(d),
             Self::Cpu => crate::bail!("expected a cuda device, got cpu"),
             Self::Metal(_) => crate::bail!("expected a cuda device, got Metal"),
+            Self::MemOS => crate::bail!("expected a cuda device, got MemOS"),
         }
     }
 
@@ -343,6 +347,7 @@ impl Device {
             Self::Cuda(_) => crate::bail!("expected a metal device, got cuda"),
             Self::Cpu => crate::bail!("expected a metal device, got cpu"),
             Self::Metal(d) => Ok(d),
+            Self::MemOS => crate::bail!("expected a metal device, got MemOS"),
         }
     }
 
@@ -359,6 +364,7 @@ impl Device {
             Self::Cpu => CpuDevice.set_seed(seed),
             Self::Cuda(c) => c.set_seed(seed),
             Self::Metal(m) => m.set_seed(seed),
+            Self::MemOS => CpuDevice.set_seed(seed),
         }
     }
 
@@ -367,6 +373,7 @@ impl Device {
             (Self::Cpu, Self::Cpu) => true,
             (Self::Cuda(lhs), Self::Cuda(rhs)) => lhs.same_device(rhs),
             (Self::Metal(lhs), Self::Metal(rhs)) => lhs.same_device(rhs),
+            (Self::MemOS, Self::MemOS) => true,
             _ => false,
         }
     }
@@ -376,6 +383,7 @@ impl Device {
             Self::Cpu => DeviceLocation::Cpu,
             Self::Cuda(device) => device.location(),
             Device::Metal(device) => device.location(),
+            Self::MemOS => DeviceLocation::MemOS,
         }
     }
 
@@ -391,10 +399,14 @@ impl Device {
         matches!(self, Self::Metal(_))
     }
 
+    pub fn is_memos(&self) -> bool {
+        matches!(self, Self::MemOS)
+    }
+
     pub fn supports_bf16(&self) -> bool {
         match self {
             Self::Cuda(_) | Self::Metal(_) => true,
-            Self::Cpu => false,
+            Self::Cpu | Self::MemOS => false,
         }
     }
 
@@ -426,6 +438,10 @@ impl Device {
             Device::Cpu => {
                 let storage = CpuDevice.rand_uniform(shape, dtype, lo, up)?;
                 Ok(Storage::Cpu(storage))
+            }
+            Device::MemOS => {
+                let storage = CpuDevice.rand_uniform(shape, dtype, lo, up)?;
+                Ok(Storage::MemOS(MemOSStorage::from(storage)))
             }
             Device::Cuda(device) => {
                 // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
@@ -465,6 +481,10 @@ impl Device {
                 let storage = CpuDevice.rand_normal(shape, dtype, mean, std)?;
                 Ok(Storage::Cpu(storage))
             }
+            Device::MemOS => {
+                let storage = CpuDevice.rand_normal(shape, dtype, mean, std)?;
+                Ok(Storage::MemOS(MemOSStorage::from(storage)))
+            }
             Device::Cuda(device) => {
                 // TODO: Remove the special case if we start supporting generating f16/bf16 directly.
                 if dtype == DType::F16 || dtype == DType::BF16 {
@@ -497,6 +517,10 @@ impl Device {
                 let storage = CpuDevice.zeros_impl(shape, dtype)?;
                 Ok(Storage::Cpu(storage))
             }
+            Device::MemOS => {
+                let storage = CpuDevice.zeros_impl(shape, dtype)?;
+                Ok(Storage::MemOS(MemOSStorage::from(storage)))
+            }
             Device::Cuda(device) => {
                 let storage = device.zeros_impl(shape, dtype)?;
                 Ok(Storage::Cuda(storage))
@@ -513,6 +537,10 @@ impl Device {
             Device::Cpu => {
                 let storage = CpuDevice.alloc_uninit(shape, dtype)?;
                 Ok(Storage::Cpu(storage))
+            }
+            Device::MemOS => {
+                let storage = CpuDevice.alloc_uninit(shape, dtype)?;
+                Ok(Storage::MemOS(MemOSStorage::from(storage)))
             }
             Device::Cuda(device) => {
                 let storage = device.alloc_uninit(shape, dtype)?;
@@ -531,6 +559,9 @@ impl Device {
     ) -> Result<Storage> {
         match self {
             Device::Cpu => Ok(Storage::Cpu(data.to_cpu_storage_static())),
+            Device::MemOS => Ok(Storage::MemOS(MemOSStorage::from(
+                data.to_cpu_storage_static(),
+            ))),
             Device::Cuda(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Cuda(storage))
@@ -545,6 +576,7 @@ impl Device {
     pub(crate) fn storage_from_slice<D: WithDType>(&self, data: &[D]) -> Result<Storage> {
         match self {
             Device::Cpu => Ok(Storage::Cpu(data.to_cpu_storage())),
+            Device::MemOS => Ok(Storage::MemOS(MemOSStorage::from(data.to_cpu_storage()))),
             Device::Cuda(device) => {
                 let storage = device.storage_from_slice(data)?;
                 Ok(Storage::Cuda(storage))
@@ -559,6 +591,10 @@ impl Device {
     pub(crate) fn storage<A: NdArray>(&self, array: A) -> Result<Storage> {
         match self {
             Device::Cpu => Ok(Storage::Cpu(array.to_cpu_storage())),
+            Device::MemOS => {
+                let s = array.to_cpu_storage();
+                Ok(Storage::MemOS(MemOSStorage::from(s)))
+            }
             Device::Cuda(device) => {
                 let storage = array.to_cpu_storage();
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
@@ -575,6 +611,10 @@ impl Device {
     pub(crate) fn storage_owned<S: WithDType>(&self, data: Vec<S>) -> Result<Storage> {
         match self {
             Device::Cpu => Ok(Storage::Cpu(S::to_cpu_storage_owned(data))),
+            Device::MemOS => {
+                let s = S::to_cpu_storage_owned(data);
+                Ok(Storage::MemOS(MemOSStorage::from(s)))
+            }
             Device::Cuda(device) => {
                 let storage = S::to_cpu_storage_owned(data);
                 let storage = device.storage_from_cpu_storage_owned(storage)?;
@@ -590,7 +630,7 @@ impl Device {
 
     pub fn synchronize(&self) -> Result<()> {
         match self {
-            Self::Cpu => Ok(()),
+            Self::Cpu | Self::MemOS => Ok(()),
             Self::Cuda(d) => d.synchronize(),
             Self::Metal(d) => d.synchronize(),
         }

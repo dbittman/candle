@@ -138,7 +138,9 @@ impl Tensor {
             offsets.push(next_offset);
         }
         let shape = Shape::from(cat_dims);
-        let op = crate::op::BackpropOp::new(args, |args| crate::op::Op::Cat(args, 0));
+        let op = crate::op::BackpropOp::new(args, |args| {
+            crate::op::Op::Cat(heapless::Vec::from_slice(&args).unwrap(), 0)
+        });
         let mut storage = unsafe { device.alloc_uninit(&shape, dtype)? };
         for (arg, &offset) in args.iter().zip(offsets.iter()) {
             let arg = arg.as_ref();
@@ -212,7 +214,9 @@ impl Tensor {
         let cat_target_dim_len = cat_dims[dim];
         let block_size: usize = cat_dims.iter().skip(1 + dim).product();
         let shape = Shape::from(cat_dims);
-        let op = crate::op::BackpropOp::new(args, |args| crate::op::Op::Cat(args, dim));
+        let op = crate::op::BackpropOp::new(args, |args| {
+            crate::op::Op::Cat(heapless::Vec::from_slice(&args).unwrap(), dim)
+        });
         let mut storage = unsafe { device.alloc_uninit(&shape, dtype)? };
         let mut dst_o = 0;
         for arg in args.iter() {
@@ -242,7 +246,7 @@ impl Tensor {
     /// has to be greater than or equal to `offset` plus the `src` size.
     ///
     /// Note that this modifies `self` in place and as such is not compatible with
-    /// back-propagation.  
+    /// back-propagation.
     pub fn slice_set<D: Dim>(&self, src: &Self, dim: D, offset: usize) -> Result<()> {
         let dim = dim.to_index(self.shape(), "slice-set")?;
         if !self.is_contiguous() || !src.is_contiguous() {

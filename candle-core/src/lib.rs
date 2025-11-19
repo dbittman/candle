@@ -89,6 +89,8 @@ pub mod test_utils;
 pub mod utils;
 mod variable;
 
+pub mod memos_backend;
+
 #[cfg(feature = "cudnn")]
 pub use cuda_backend::cudnn;
 

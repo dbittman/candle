@@ -33,6 +33,7 @@ ug-metal = { workspace = true, optional = true }
 yoke = { workspace = true }
 zip = { workspace = true }
 tracing = { workspace = true }
+heapless = "*"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "twizzler")))'.dependencies]
 ug = { workspace = true }

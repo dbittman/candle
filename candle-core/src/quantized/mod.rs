@@ -1,7 +1,12 @@
 //! Code for GGML and GGUF files
-use crate::{Context, CpuStorage, DType, Device, Result, Shape, Storage, Tensor};
+use crate::{
+    cpu_backend::CpuDevice,
+    memos_backend::{MemOSBuilder, MemOSDevice, MemOSStorage},
+    tensor::{Invariable, MaybeRef},
+    Context, CpuStorage, DType, Device, Result, Shape, Storage, Tensor,
+};
 use k_quants::*;
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 #[cfg(target_feature = "avx")]
 pub mod avx;
@@ -37,6 +42,44 @@ pub struct QTensor {
     shape: Shape,
 }
 
+impl Invariable for QTensor {
+    fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        let s = match &self.storage {
+            QStorage::MemOS(qmem_osstorage) => {
+                let ptr = qmem_osstorage.buffer.inner_ref().as_ptr();
+                let len = qmem_osstorage.buffer.inner_ref().storage_size_in_bytes()
+                    / self.dtype().type_size();
+                match self.dtype() {
+                    GgmlDType::F32 => {
+                        let slice = unsafe { core::slice::from_raw_parts(ptr as *const f32, len) };
+                        QMemOSStorage {
+                            buffer: MaybeRef::new(Box::new(slice.to_vec())),
+                            dtype: self.dtype(),
+                        }
+                    }
+                    GgmlDType::Q8_0 => {
+                        let slice =
+                            unsafe { core::slice::from_raw_parts(ptr as *const BlockQ8_0, len) };
+                        QMemOSStorage {
+                            buffer: MaybeRef::new(Box::new(slice.to_vec())),
+                            dtype: self.dtype(),
+                        }
+                    }
+                    _ => todo!(),
+                }
+            }
+            _ => todo!(),
+        };
+        Ok(Self {
+            storage: QStorage::MemOS(s),
+            shape: self.shape().clone(),
+        })
+    }
+}
+
 impl Device {
     fn qzeros(&self, elem_count: usize, dtype: GgmlDType) -> Result<QStorage> {
         match self {
@@ -52,14 +95,185 @@ impl Device {
                 let storage = cuda::QCudaStorage::zeros(cuda, elem_count, dtype)?;
                 Ok(QStorage::Cuda(storage))
             }
+            Device::MemOS => {
+                let storage = dtype.cpu_zeros(elem_count);
+                Ok(QStorage::MemOS(QMemOSStorage::from(storage)))
+            }
         }
     }
+}
+
+pub struct QMemOSStorage {
+    dtype: GgmlDType,
+    buffer: MaybeRef<Box<dyn QuantizedType>>,
+}
+
+impl From<Box<dyn QuantizedType>> for QMemOSStorage {
+    fn from(value: Box<dyn QuantizedType>) -> Self {
+        Self {
+            dtype: value.dtype(),
+            buffer: MaybeRef::new(value),
+        }
+    }
+}
+impl<T: GgmlType + Sized + Clone + 'static> From<Vec<T>> for QMemOSStorage {
+    fn from(value: Vec<T>) -> Self {
+        Self {
+            dtype: T::DTYPE,
+            buffer: MaybeRef::new(Box::new(value)),
+        }
+    }
+}
+
+impl QMemOSStorage {
+    /*
+    fn as_slice<T: GgmlType>(&self) -> &[T] {
+        tracing::trace!(
+            "as slice: {:?} {} {} {}",
+            T::DTYPE,
+            self.buffer.inner_ref().len(),
+            T::DTYPE.type_size(),
+            T::DTYPE.block_size(),
+        );
+        let p = self.buffer.inner_ref().as_ptr() as *const T;
+        let len = self.buffer.inner_ref().len() / size_of::<T>();
+        unsafe { core::slice::from_raw_parts(p, len) }
+    }
+
+    fn matmul_t(&self, mkn: (usize, usize, usize), lhs: &[f32], dst: &mut [f32]) -> Result<()> {
+        match self.dtype {
+            GgmlDType::F32 => k_quants::matmul::<f32>(mkn, lhs, self.as_slice(), dst),
+            GgmlDType::F16 => todo!(),
+            GgmlDType::Q4_0 => todo!(),
+            GgmlDType::Q4_1 => todo!(),
+            GgmlDType::Q5_0 => todo!(),
+            GgmlDType::Q5_1 => todo!(),
+            GgmlDType::Q8_0 => k_quants::matmul::<BlockQ8_0>(mkn, lhs, self.as_slice(), dst),
+            GgmlDType::Q8_1 => todo!(),
+            GgmlDType::Q2K => todo!(),
+            GgmlDType::Q3K => todo!(),
+            GgmlDType::Q4K => todo!(),
+            GgmlDType::Q5K => todo!(),
+            GgmlDType::Q6K => todo!(),
+            GgmlDType::Q8K => todo!(),
+        }
+    }
+
+    pub fn dtype(&self) -> GgmlDType {
+        self.dtype
+    }
+
+    pub fn dequantize(&self, elem_count: usize) -> Result<MemOSStorage> {
+        use crate::quantized::k_quants::GgmlType;
+        tracing::debug!("dequantize: {} {:?}", elem_count, self.dtype());
+
+        let mut out = vec![0.0; elem_count];
+        let block_len = elem_count / self.dtype.block_size();
+        let buffer = self.buffer.inner_ref().as_slice();
+        match self.dtype {
+            GgmlDType::F32 => {
+                let vec: Vec<f32> = read_to_vec(&buffer, block_len);
+                f32::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::F16 => {
+                let vec: Vec<half::f16> = read_to_vec(&buffer, block_len);
+                half::f16::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q4_0 => {
+                let vec: Vec<crate::quantized::BlockQ4_0> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ4_0::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q4_1 => {
+                let vec: Vec<crate::quantized::BlockQ4_1> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ4_1::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q5_0 => {
+                let vec: Vec<crate::quantized::BlockQ5_0> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ5_0::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q5_1 => {
+                let vec: Vec<crate::quantized::BlockQ5_1> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ5_1::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q8_0 => {
+                let vec: Vec<crate::quantized::BlockQ8_0> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ8_0::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q8_1 => {
+                let vec: Vec<crate::quantized::BlockQ8_1> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ8_1::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q2K => {
+                let vec: Vec<crate::quantized::BlockQ2K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ2K::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q3K => {
+                let vec: Vec<crate::quantized::BlockQ3K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ3K::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q4K => {
+                let vec: Vec<crate::quantized::BlockQ4K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ4K::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q5K => {
+                let vec: Vec<crate::quantized::BlockQ5K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ5K::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q6K => {
+                let vec: Vec<crate::quantized::BlockQ6K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ6K::to_float(&vec, &mut out)?;
+            }
+            GgmlDType::Q8K => {
+                let vec: Vec<crate::quantized::BlockQ8K> = read_to_vec(&buffer, block_len);
+                crate::quantized::BlockQ8K::to_float(&vec, &mut out)?;
+            }
+        }
+
+        let buffer = CpuStorage::F32(out.into());
+        Ok(MemOSStorage::from(buffer))
+    }
+
+    pub fn quantize(&mut self, src: &MemOSStorage) -> Result<()> {
+        panic!();
+        // Quantization only happens on CPU for now.
+        let src = src.to_cpu::<f32>()?;
+        let elem_count = src.len();
+        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src.into()));
+        let mut qcpu_storage = crate::Device::Cpu.qzeros(elem_count, self.dtype)?;
+        qcpu_storage.quantize(&src)?;
+
+        //let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
+        self.buffer = MaybeRef::new(qcpu_storage.data()?.to_vec());
+        Ok(())
+    }
+
+    pub fn storage_size_in_bytes(&self) -> usize {
+        self.buffer.inner_ref().len()
+    }
+    */
+}
+
+fn read_to_vec<T: Clone>(buffer: &[u8], n: usize) -> Vec<T> {
+    //tracing::debug!("rtv: {}", n);
+    let ptr = buffer.as_ptr() as *const T;
+    assert!(!ptr.is_null());
+    let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
+    slice.to_vec()
+}
+
+fn slice_to_u8_vec<T: Clone>(buffer: &[T]) -> Vec<u8> {
+    //tracing::debug!("stv: {}", buffer.len());
+    let ptr = buffer.as_ptr() as *const u8;
+    assert!(!ptr.is_null());
+    let slice = unsafe { std::slice::from_raw_parts(ptr, buffer.len() * size_of::<T>()) };
+    slice.to_vec()
 }
 
 pub enum QStorage {
     Cpu(Box<dyn QuantizedType>),
     Metal(metal::QMetalStorage),
     Cuda(cuda::QCudaStorage),
+    MemOS(QMemOSStorage),
 }
 
 impl QStorage {
@@ -68,6 +282,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.block_size(),
             QStorage::Metal(storage) => storage.dtype().block_size(),
             QStorage::Cuda(storage) => storage.dtype().block_size(),
+            QStorage::MemOS(storage) => storage.buffer.inner_ref().block_size(),
         }
     }
 
@@ -76,6 +291,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.dtype(),
             QStorage::Metal(storage) => storage.dtype(),
             QStorage::Cuda(storage) => storage.dtype(),
+            QStorage::MemOS(storage) => storage.buffer.inner_ref().dtype(),
         }
     }
 
@@ -84,6 +300,7 @@ impl QStorage {
             QStorage::Cpu(_storage) => Device::Cpu,
             QStorage::Metal(storage) => Device::Metal(storage.device().clone()),
             QStorage::Cuda(storage) => Device::Cuda(storage.device().clone()),
+            QStorage::MemOS(_storage) => Device::MemOS,
         }
     }
 
@@ -92,6 +309,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.storage_size_in_bytes(),
             QStorage::Metal(storage) => storage.storage_size_in_bytes(),
             QStorage::Cuda(storage) => storage.storage_size_in_bytes(),
+            QStorage::MemOS(storage) => storage.buffer.inner_ref().storage_size_in_bytes(),
         }
     }
 
@@ -102,6 +320,13 @@ impl QStorage {
             }
             (QStorage::Metal(storage), Storage::Metal(src)) => storage.quantize(src)?,
             (QStorage::Cuda(storage), Storage::Cuda(src)) => storage.quantize(src)?,
+            (QStorage::MemOS(storage), Storage::MemOS(src)) => {
+                storage
+                    .buffer
+                    .inner_mut()
+                    .from_float(src.buffer.as_slice::<f32>()?)?;
+            }
+
             _ => crate::bail!("Invalid dequantize storage locations do not match"),
         }
         Ok(())
@@ -112,6 +337,9 @@ impl QStorage {
             QStorage::Cpu(storage) => Ok(Storage::Cpu(storage.dequantize(elem_count)?)),
             QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
             QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
+            QStorage::MemOS(storage) => Ok(Storage::MemOS(MemOSStorage::from(
+                storage.buffer.inner_ref().dequantize(elem_count)?,
+            ))),
         }
     }
 
@@ -120,6 +348,12 @@ impl QStorage {
             QStorage::Cpu(storage) => {
                 let data_ptr = storage.as_ptr();
                 let size_in_bytes = storage.storage_size_in_bytes();
+                let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
+                Ok(Cow::from(data))
+            }
+            QStorage::MemOS(storage) => {
+                let data_ptr = storage.buffer.inner_ref().as_ptr();
+                let size_in_bytes = storage.buffer.inner_ref().storage_size_in_bytes();
                 let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
                 Ok(Cow::from(data))
             }
@@ -392,7 +626,7 @@ impl QTensor {
 
 #[derive(Clone, Debug)]
 pub enum QMatMul {
-    QTensor(std::sync::Arc<QTensor>),
+    QTensor(MaybeRef<QTensor>),
     Tensor(Tensor),
     TensorF16(Tensor),
 }
@@ -420,7 +654,15 @@ thread_local! {
 }
 
 impl QMatMul {
-    pub fn from_arc(qtensor: std::sync::Arc<QTensor>) -> Result<Self> {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(match self {
+            QMatMul::QTensor(maybe_ref) => QMatMul::QTensor(maybe_ref.move_to_memos(ctx)?),
+            QMatMul::Tensor(tensor) => QMatMul::Tensor(tensor.move_to_memos(ctx)?),
+            QMatMul::TensorF16(tensor) => QMatMul::TensorF16(tensor.move_to_memos(ctx)?),
+        })
+    }
+
+    pub fn from_arc(qtensor: Arc<QTensor>) -> Result<Self> {
         let dequantize = match qtensor.dtype() {
             GgmlDType::F32 | GgmlDType::F16 => true,
             _ => DEQUANTIZE_ALL.with(|b| *b),
@@ -432,18 +674,18 @@ impl QMatMul {
             let tensor = qtensor.dequantize_f16(&qtensor.device())?;
             Self::TensorF16(tensor)
         } else {
-            Self::QTensor(qtensor)
+            Self::QTensor(MaybeRef::from_arc(qtensor))
         };
         Ok(t)
     }
 
     pub fn from_qtensor(qtensor: QTensor) -> Result<Self> {
-        Self::from_arc(std::sync::Arc::new(qtensor))
+        Self::from_arc(Arc::new(qtensor))
     }
 
     pub fn dequantize_f16(&self) -> Result<Tensor> {
         match self {
-            Self::QTensor(t) => t.dequantize_f16(&t.device()),
+            Self::QTensor(t) => t.inner_ref().dequantize_f16(&t.inner_ref().device()),
             Self::Tensor(t) => t.to_dtype(DType::F16),
             Self::TensorF16(t) => Ok(t.clone()),
         }
@@ -490,7 +732,10 @@ impl crate::CustomOp1 for QTensor {
         #[allow(clippy::infallible_destructuring_match)]
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
-            QStorage::Metal(_) | QStorage::Cuda(_) => crate::bail!("Invalid storage"),
+            QStorage::MemOS(storage) => storage.buffer.inner_ref(),
+            QStorage::Metal(_) | QStorage::Cuda(_) => {
+                crate::bail!("Invalid storage")
+            }
         };
         let slice = storage.as_slice::<f32>()?;
         let slice = &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
@@ -527,7 +772,7 @@ impl crate::CustomOp1 for QTensor {
 impl crate::Module for QMatMul {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         match self {
-            Self::QTensor(t) => xs.apply_op1_no_bwd(t.as_ref()),
+            Self::QTensor(t) => xs.apply_op1_no_bwd(t.inner_ref()),
             Self::Tensor(w) => {
                 let w = match *xs.dims() {
                     [b1, b2, _, _] => w.broadcast_left((b1, b2))?.t()?,

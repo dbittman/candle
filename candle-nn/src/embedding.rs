@@ -1,5 +1,5 @@
 //! Embedding Layer.
-use candle::{Result, Tensor};
+use candle::{memos_backend::MemOSBuilder, Result, Tensor};
 
 #[derive(Clone, Debug)]
 pub struct Embedding {
@@ -8,6 +8,13 @@ pub struct Embedding {
 }
 
 impl Embedding {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            embeddings: self.embeddings.move_to_memos(ctx)?,
+            hidden_size: self.hidden_size(),
+        })
+    }
+
     pub fn new(embeddings: Tensor, hidden_size: usize) -> Self {
         Self {
             embeddings,

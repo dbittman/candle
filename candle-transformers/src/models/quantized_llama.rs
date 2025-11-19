@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 
 use crate::quantized_nn::RmsNorm;
+use candle::memos_backend::MemOSBuilder;
 use candle::quantized::QTensor;
 use candle::quantized::{ggml_file, gguf_file};
 use candle::{DType, Device, IndexOp, Result, Tensor};
@@ -34,6 +35,13 @@ struct QMatMul {
 }
 
 impl QMatMul {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.move_to_memos(ctx)?,
+            span: self.span.clone(),
+        })
+    }
+
     fn from_qtensor(qtensor: QTensor) -> Result<Self> {
         let inner = candle::quantized::QMatMul::from_qtensor(qtensor)?;
         let span = tracing::span!(tracing::Level::TRACE, "qmatmul");
@@ -53,6 +61,16 @@ struct Mlp {
     feed_forward_w3: QMatMul,
 }
 
+impl Mlp {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            feed_forward_w1: self.feed_forward_w1.move_to_memos(ctx)?,
+            feed_forward_w2: self.feed_forward_w2.move_to_memos(ctx)?,
+            feed_forward_w3: self.feed_forward_w3.move_to_memos(ctx)?,
+        })
+    }
+}
+
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let w1 = self.feed_forward_w1.forward(xs)?;
@@ -68,8 +86,28 @@ enum MlpOrMoe {
     MoE {
         n_expert_used: usize,
         feed_forward_gate_inp: QMatMul,
-        experts: Vec<Mlp>,
+        experts: heapless::Vec<Mlp, 16>,
     },
+}
+
+impl MlpOrMoe {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        match self {
+            Self::Mlp(mlp) => Ok(Self::Mlp(mlp.move_to_memos(ctx)?)),
+            Self::MoE {
+                n_expert_used,
+                feed_forward_gate_inp,
+                experts,
+            } => Ok(Self::MoE {
+                n_expert_used: *n_expert_used,
+                feed_forward_gate_inp: feed_forward_gate_inp.move_to_memos(ctx)?,
+                experts: experts
+                    .iter()
+                    .map(|e| e.move_to_memos(ctx))
+                    .collect::<Result<_>>()?,
+            }),
+        }
+    }
 }
 
 impl Module for MlpOrMoe {
@@ -170,6 +208,28 @@ fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: &Tensor) -> Result<Ten
 }
 
 impl LayerWeights {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            attention_wq: self.attention_wq.move_to_memos(ctx)?,
+            attention_wk: self.attention_wk.move_to_memos(ctx)?,
+            attention_wv: self.attention_wv.move_to_memos(ctx)?,
+            attention_wo: self.attention_wo.move_to_memos(ctx)?,
+            attention_norm: self.attention_norm.move_to_memos(ctx)?,
+            mlp_or_moe: self.mlp_or_moe.move_to_memos(ctx)?,
+            ffn_norm: self.ffn_norm.move_to_memos(ctx)?,
+            n_head: self.n_head,
+            n_kv_head: self.n_kv_head,
+            head_dim: self.head_dim,
+            cos: self.cos.move_to_memos(ctx)?,
+            sin: self.sin.move_to_memos(ctx)?,
+            neg_inf: self.neg_inf.move_to_memos(ctx)?,
+            kv_cache: None,
+            span_attn: self.span_attn.clone(),
+            span_rot: self.span_rot.clone(),
+            span_mlp: self.span_mlp.clone(),
+        })
+    }
+
     fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
         let _enter = self.span_rot.enter();
         let (_b_sz, _n_head, seq_len, _n_embd) = x.dims4()?;
@@ -253,12 +313,30 @@ impl LayerWeights {
 #[derive(Debug, Clone)]
 pub struct ModelWeights {
     tok_embeddings: Embedding,
-    layers: Vec<LayerWeights>,
+    layers: heapless::Vec<LayerWeights, 32>,
     norm: RmsNorm,
     output: QMatMul,
     masks: HashMap<usize, Tensor>,
     span: tracing::Span,
     span_output: tracing::Span,
+}
+
+impl ModelWeights {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            tok_embeddings: self.tok_embeddings.move_to_memos(ctx)?,
+            layers: self
+                .layers
+                .iter()
+                .map(|l| l.move_to_memos(ctx))
+                .collect::<Result<_>>()?,
+            norm: self.norm.move_to_memos(ctx)?,
+            output: self.output.move_to_memos(ctx)?,
+            masks: HashMap::new(),
+            span: self.span.clone(),
+            span_output: self.span_output.clone(),
+        })
+    }
 }
 
 fn precomput_freqs_cis(
@@ -281,6 +359,14 @@ fn precomput_freqs_cis(
 }
 
 impl ModelWeights {
+    pub fn print_out(&self) {
+        println!("emb: {:?}", self.tok_embeddings);
+        println!("nr_layers: {}", self.layers.len());
+        println!("masks ({}): {:?}", self.masks.len(), self.masks);
+        println!("out: {:?}", self.output);
+        println!("norm: {:?}", self.norm);
+    }
+
     pub fn from_ggml(mut ct: ggml_file::Content, gqa: usize) -> Result<Self> {
         let head_dim = (ct.hparams.n_embd / ct.hparams.n_head) as usize;
         let (cos, sin) = precomput_freqs_cis(head_dim, 10000., &ct.device)?;
@@ -335,7 +421,7 @@ impl ModelWeights {
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, ct.hparams.n_embd as usize),
-            layers,
+            layers: heapless::Vec::from_slice(&layers).unwrap(),
             norm,
             output: QMatMul::from_qtensor(output)?,
             masks: HashMap::new(),
@@ -375,6 +461,7 @@ impl ModelWeights {
         let (cos, sin) = precomput_freqs_cis(rope_dim, rope_freq_base, device)?;
         let neg_inf = Tensor::new(f32::NEG_INFINITY, device)?;
 
+        tracing::debug!("llama deq: {:?}", device);
         let tok_embeddings_q = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings_q.dequantize(device)?;
         let norm = RmsNorm::from_qtensor(
@@ -425,7 +512,7 @@ impl ModelWeights {
                 MlpOrMoe::MoE {
                     n_expert_used,
                     feed_forward_gate_inp: QMatMul::from_qtensor(feed_forward_gate_inp)?,
-                    experts,
+                    experts: heapless::Vec::from_slice(&experts).unwrap(),
                 }
             };
             let attention_norm =
@@ -458,7 +545,7 @@ impl ModelWeights {
         let span_output = tracing::span!(tracing::Level::TRACE, "output");
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
-            layers,
+            layers: heapless::Vec::from_slice(&layers).unwrap(),
             norm,
             output: QMatMul::from_qtensor(output)?,
             masks: HashMap::new(),

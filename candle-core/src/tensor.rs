@@ -1,10 +1,14 @@
 //! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
 use crate::backend::{BackendDevice, BackendStorage};
+use crate::memos_backend::{MemOSBuilder, MemOSStorage};
 use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
+use crate::quantized::QTensor;
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims, ShapeWithOneHole};
 use crate::{bail, storage::Storage, DType, Device, Error, Layout, Result, Shape};
+use std::any::Any;
+use std::cell::UnsafeCell;
 use std::sync::{Arc, RwLock};
 
 /// Unique identifier for tensors.
@@ -34,12 +38,35 @@ pub struct Tensor_ {
     // Ideally, we would use Arc<Storage> for tensors on which we don't plan on modifying the data
     // and Arc<Mutex<Storage>> for tensors where the data could be modified, e.g. variables but
     // that's tricky to encode in the current setup.
-    storage: Arc<RwLock<Storage>>,
+    //storage: Arc<RwLock<Storage>>,
+    storage: Holder<Storage>,
     layout: Layout,
     op: BackpropOp,
     is_variable: bool,
     dtype: DType,
     device: Device,
+}
+
+struct Holder<T>(Arc<UnsafeCell<T>>);
+
+impl<T> Clone for Holder<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<T> Holder<T> {
+    pub fn new(t: T) -> Self {
+        Self(Arc::new(UnsafeCell::new(t)))
+    }
+
+    pub fn inner_ref(&self) -> &T {
+        unsafe { self.0.get().as_ref() }.unwrap()
+    }
+
+    pub fn inner_mut(&self) -> &mut T {
+        unsafe { self.0.get().as_mut() }.unwrap()
+    }
 }
 
 impl AsRef<Tensor> for Tensor {
@@ -65,13 +92,116 @@ impl AsRef<Tensor> for Tensor {
 /// ```
 ///
 /// Tensors are reference counted with [`Arc`] so cloning them is cheap.
-pub struct Tensor(Arc<Tensor_>);
+pub struct Tensor(MaybeRef<Tensor_>);
+
+impl Tensor {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Tensor(self.0.move_to_memos(ctx)?))
+    }
+}
+
+pub enum MaybeRef<T> {
+    Ref(*const T, Arc<dyn Any>),
+    Gp(u128, u64),
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for MaybeRef<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MaybeRef::Ref(ptr, _) => write!(f, "Ref({:?})", unsafe { ptr.as_ref().unwrap() }),
+            MaybeRef::Gp(id, size) => write!(f, "Gp({:?}, {:?})", id, size),
+        }
+    }
+}
+
+impl<T> Clone for MaybeRef<T> {
+    fn clone(&self) -> Self {
+        match self {
+            MaybeRef::Ref(ptr, arc) => MaybeRef::Ref(*ptr, arc.clone()),
+            MaybeRef::Gp(id, size) => MaybeRef::Gp(*id, *size),
+        }
+    }
+}
+
+pub trait Invariable {
+    fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self>
+    where
+        Self: Sized;
+}
+
+impl Invariable for BackpropOp {
+    fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        if self.is_some() {
+            panic!("")
+        }
+        Ok(Self::none())
+    }
+}
+
+impl Invariable for Tensor_ {
+    fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            id: self.id,
+            storage: self.storage.clone(),
+            layout: self.layout.clone(),
+            op: self.op.move_to_memos(ctx)?,
+            is_variable: self.is_variable,
+            dtype: self.dtype.clone(),
+            device: self.device.clone(),
+        })
+    }
+}
+
+unsafe impl<T> Send for MaybeRef<T> {}
+unsafe impl<T> Sync for MaybeRef<T> {}
+
+impl<T: 'static> MaybeRef<T> {
+    pub fn new(tensor: T) -> Self {
+        let t = Arc::new(tensor);
+        Self::Ref(&*t, t)
+    }
+
+    pub fn from_arc(x: Arc<T>) -> Self {
+        Self::Ref(&*x, x)
+    }
+
+    pub fn inner_mut(&self) -> &mut T {
+        match self {
+            MaybeRef::Ref(ptr, _) => unsafe { (*ptr as *mut T).as_mut().unwrap() },
+            MaybeRef::Gp(_, _) => todo!(),
+        }
+    }
+
+    pub fn inner_ref(&self) -> &T {
+        match self {
+            MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
+            MaybeRef::Gp(_, _) => todo!(),
+        }
+    }
+}
+
+impl<T: Invariable + 'static> MaybeRef<T> {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        match self {
+            MaybeRef::Ref(p, _any) => {
+                println!("MTM: {:p}: {}", *p, std::any::type_name::<T>());
+                let t = unsafe { p.as_ref().unwrap() };
+                let t = t.move_to_memos(ctx)?;
+                Ok(MaybeRef::new(t))
+            }
+            MaybeRef::Gp(x, y) => Ok(MaybeRef::Gp(*x, *y)),
+        }
+    }
+}
 
 impl std::ops::Deref for Tensor {
     type Target = Tensor_;
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_ref()
+        match &self.0 {
+            MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
+            MaybeRef::Gp(_, _) => todo!(),
+        }
     }
 }
 
@@ -164,16 +294,17 @@ pub(crate) fn from_storage<S: Into<Shape>>(
 ) -> Tensor {
     let dtype = storage.dtype();
     let device = storage.device();
+    //tracing::debug!("{:?}: {}", device, is_variable);
     let tensor_ = Tensor_ {
         id: TensorId::new(),
-        storage: Arc::new(RwLock::new(storage)),
+        storage: Holder::new(storage),
         layout: Layout::contiguous(shape),
         op,
         is_variable,
         dtype,
         device,
     };
-    Tensor(Arc::new(tensor_))
+    Tensor(MaybeRef::new(tensor_))
 }
 
 impl Tensor {
@@ -628,6 +759,7 @@ impl Tensor {
             Storage::Cpu(cpu_storage) => from_cpu_storage(cpu_storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::MemOS(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -862,7 +994,7 @@ impl Tensor {
                 dtype: self.dtype,
                 device: self.device.clone(),
             };
-            Ok(Tensor(Arc::new(tensor_)))
+            Ok(Tensor(MaybeRef::new(tensor_)))
         }
     }
 
@@ -894,9 +1026,9 @@ impl Tensor {
         let mut dims = self.dims().to_vec();
         dims[dim] = 1;
         let op = match op {
-            ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => {
-                BackpropOp::new1(self, |arg| Op::Reduce(arg, op, dims.to_vec()))
-            }
+            ReduceOp::Sum | ReduceOp::Min | ReduceOp::Max => BackpropOp::new1(self, |arg| {
+                Op::Reduce(arg, op, heapless::Vec::from_slice(&dims).unwrap())
+            }),
             ReduceOp::ArgMin | ReduceOp::ArgMax => BackpropOp::none(),
         };
         let res = from_storage(storage, dims, op, false);
@@ -916,7 +1048,9 @@ impl Tensor {
         for &sum_dim in sum_dims.iter() {
             dims[sum_dim] = 1
         }
-        let op = BackpropOp::new1(self, |a| Op::Reduce(a, ReduceOp::Sum, dims.to_vec()));
+        let op = BackpropOp::new1(self, |a| {
+            Op::Reduce(a, ReduceOp::Sum, heapless::Vec::from_slice(&dims).unwrap())
+        });
         let sum = from_storage(storage, dims, op, false);
         if keepdim {
             Ok(sum)
@@ -1787,6 +1921,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::MemOS(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1818,6 +1953,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::MemOS(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -1859,6 +1995,7 @@ impl Tensor {
             Storage::Cpu(storage) => from_cpu_storage(storage),
             Storage::Cuda(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
             Storage::Metal(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
+            Storage::MemOS(storage) => from_cpu_storage(&storage.to_cpu_storage()?),
         }
     }
 
@@ -2117,7 +2254,7 @@ impl Tensor {
             dtype: self.dtype,
             device: self.device.clone(),
         };
-        Ok(Tensor(Arc::new(tensor_)))
+        Ok(Tensor(MaybeRef::new(tensor_)))
     }
 
     /// Returns a tensor with the same data as the input where the dimensions have been permuted.
@@ -2143,7 +2280,9 @@ impl Tensor {
                 dims
             )
         }
-        let op = BackpropOp::new1(self, |t| Op::Permute(t, dims.clone()));
+        let op = BackpropOp::new1(self, |t| {
+            Op::Permute(t, heapless::Vec::from_slice(&dims).unwrap())
+        });
         let tensor_ = Tensor_ {
             id: TensorId::new(),
             storage: self.storage.clone(),
@@ -2153,7 +2292,7 @@ impl Tensor {
             dtype: self.dtype,
             device: self.device.clone(),
         };
-        Ok(Tensor(Arc::new(tensor_)))
+        Ok(Tensor(MaybeRef::new(tensor_)))
     }
 
     /// Returns true if the data is stored in a C contiguous (aka row major) way.
@@ -2172,14 +2311,14 @@ impl Tensor {
         let op = BackpropOp::new1(self, Op::Copy);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Arc::new(RwLock::new(self.storage().try_clone(self.layout())?)),
+            storage: Holder::new(self.storage().try_clone(self.layout())?),
             layout: self.layout.clone(),
             op,
             is_variable: false,
             dtype: self.dtype,
             device: self.device.clone(),
         };
-        Ok(Tensor(Arc::new(tensor_)))
+        Ok(Tensor(MaybeRef::new(tensor_)))
     }
 
     /// Returns a new tensor detached from the current graph, gradient are not propagated through
@@ -2199,7 +2338,7 @@ impl Tensor {
                 dtype: self.dtype,
                 device: self.device.clone(),
             };
-            Tensor(Arc::new(tensor_))
+            Tensor(MaybeRef::new(tensor_))
         }
     }
 
@@ -2224,9 +2363,17 @@ impl Tensor {
                     Storage::Cuda(cuda.storage_from_cpu_storage(&cpu_storage)?)
                 }
                 (Storage::Cpu(storage), Device::Cpu) => Storage::Cpu(storage.clone()),
+                (Storage::Cpu(storage), Device::MemOS) => {
+                    Storage::MemOS(MemOSStorage::from(storage.clone()))
+                }
+                (Storage::MemOS(storage), Device::MemOS) => {
+                    Storage::MemOS(MemOSStorage::from(storage.clone()))
+                }
+                (Storage::MemOS(storage), Device::Cpu) => Storage::Cpu(storage.buffer().clone()),
                 _ => {
                     bail!(
-                        "not implemented yet, self.device: {:?}, device: {:?}",
+                        "not implemented yet, ({}) self.device: {:?}, device: {:?}",
+                        matches!(*self.storage(), Storage::Cpu(_)),
                         self.device(),
                         device
                     )
@@ -2235,14 +2382,14 @@ impl Tensor {
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Arc::new(RwLock::new(storage)),
+                storage: Holder::new(storage),
                 layout: self.layout.clone(),
                 op,
                 is_variable: false,
                 dtype: self.dtype,
                 device: device.clone(),
             };
-            Ok(Tensor(Arc::new(tensor_)))
+            Ok(Tensor(MaybeRef::new(tensor_)))
         }
     }
 
@@ -2272,7 +2419,7 @@ impl Tensor {
             dtype: self.dtype,
             device: self.device.clone(),
         };
-        Ok(Tensor(Arc::new(tensor_)))
+        Ok(Tensor(MaybeRef::new(tensor_)))
     }
 
     /// An alias for broadcast_as.
@@ -2382,7 +2529,7 @@ impl Tensor {
                 dtype: self.dtype,
                 device: self.device.clone(),
             };
-            Ok(Tensor(Arc::new(tensor_)))
+            Ok(Tensor(MaybeRef::new(tensor_)))
         } else {
             let mut storage = unsafe { self.device().alloc_uninit(&shape, self.dtype())? };
             self.storage()
@@ -2423,7 +2570,7 @@ impl Tensor {
                 dtype: self.dtype,
                 device: self.device.clone(),
             };
-            Ok(Tensor(Arc::new(tensor_)))
+            Ok(Tensor(MaybeRef::new(tensor_)))
         } else {
             Ok(self.clone())
         }
@@ -2461,7 +2608,7 @@ impl Tensor {
             dtype: self.dtype,
             device: self.device.clone(),
         };
-        Ok(Tensor(Arc::new(tensor_)))
+        Ok(Tensor(MaybeRef::new(tensor_)))
     }
 
     /// Stacks two or more tensors along a particular dimension.
@@ -2570,33 +2717,31 @@ impl Tensor {
         m.forward_t(self, train)
     }
 
-    pub(crate) fn storage(&self) -> std::sync::RwLockReadGuard<'_, Storage> {
-        self.storage.read().unwrap()
+    pub(crate) fn storage(&self) -> &Storage {
+        self.storage.inner_ref()
     }
 
-    pub(crate) fn storage_mut(&self) -> std::sync::RwLockWriteGuard<'_, Storage> {
-        self.storage.write().unwrap()
+    pub(crate) fn storage_mut(&self) -> &mut Storage {
+        tracing::debug!("storage mut");
+        self.storage.inner_mut()
     }
 
     // If we extend the visibility of this function to be usable outside of this crate, we should
     // make it unsafe.
-    pub(crate) fn storage_mut_and_layout(
-        &self,
-    ) -> (std::sync::RwLockWriteGuard<'_, Storage>, &Layout) {
-        let storage = self.storage.write().unwrap();
+    pub(crate) fn storage_mut_and_layout(&self) -> (&mut Storage, &Layout) {
+        tracing::debug!("storage mut and layout");
+        let storage = self.storage.inner_mut();
         (storage, &self.layout)
     }
 
     /// The storage used by this tensor, together with the layout to use to access it safely.
-    pub fn storage_and_layout(&self) -> (std::sync::RwLockReadGuard<'_, Storage>, &Layout) {
-        let storage = self.storage.read().unwrap();
+    pub fn storage_and_layout(&self) -> (&Storage, &Layout) {
+        let storage = self.storage.inner_ref();
         (storage, &self.layout)
     }
 
     pub(crate) fn same_storage(&self, rhs: &Self) -> bool {
-        let lhs: &RwLock<Storage> = self.storage.as_ref();
-        let rhs: &RwLock<Storage> = rhs.storage.as_ref();
-        std::ptr::eq(lhs, rhs)
+        std::ptr::eq(self.storage(), rhs.storage())
     }
 
     /// Normalize a 'relative' axis value: positive values are kept, negative

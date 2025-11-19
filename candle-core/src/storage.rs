@@ -1,4 +1,5 @@
 use crate::backend::BackendStorage;
+use crate::memos_backend::MemOSStorage;
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
 use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
@@ -11,6 +12,7 @@ pub enum Storage {
     Cpu(CpuStorage),
     Cuda(CudaStorage),
     Metal(MetalStorage),
+    MemOS(MemOSStorage),
 }
 
 impl Storage {
@@ -25,6 +27,10 @@ impl Storage {
                 let storage = storage.try_clone(layout)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.try_clone(layout)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -33,6 +39,7 @@ impl Storage {
             Self::Cpu(_) => Device::Cpu,
             Self::Cuda(storage) => Device::Cuda(storage.device().clone()),
             Self::Metal(storage) => Device::Metal(storage.device().clone()),
+            Self::MemOS(_) => Device::MemOS,
         }
     }
 
@@ -41,6 +48,7 @@ impl Storage {
             Self::Cpu(storage) => storage.dtype(),
             Self::Cuda(storage) => storage.dtype(),
             Self::Metal(storage) => storage.dtype(),
+            Self::MemOS(storage) => storage.dtype(),
         }
     }
 
@@ -79,6 +87,7 @@ impl Storage {
             Storage::Cpu(storage) => storage.const_set(v, l),
             Storage::Cuda(storage) => storage.const_set(v, l),
             Storage::Metal(storage) => storage.const_set(v, l),
+            Storage::MemOS(storage) => storage.const_set(v, l),
         }
     }
 
@@ -95,6 +104,10 @@ impl Storage {
             Self::Metal(storage) => {
                 let storage = storage.affine(layout, mul, add)?;
                 Ok(Self::Metal(storage))
+            }
+            Self::MemOS(storage) => {
+                let storage = storage.affine(layout, mul, add)?;
+                Ok(Self::MemOS(storage))
             }
         }
     }
@@ -114,6 +127,10 @@ impl Storage {
                 let storage = storage.powf(layout, alpha)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.powf(layout, alpha)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -131,6 +148,10 @@ impl Storage {
             Self::Metal(storage) => {
                 let storage = storage.elu(layout, alpha)?;
                 Ok(Self::Metal(storage))
+            }
+            Self::MemOS(storage) => {
+                let storage = storage.elu(layout, alpha)?;
+                Ok(Self::MemOS(storage))
             }
         }
     }
@@ -158,6 +179,11 @@ impl Storage {
                 let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(lhs), Self::MemOS(rhs)) => {
+                let storage = lhs.cmp(op, rhs, lhs_layout, rhs_layout)?;
+                Ok(Self::MemOS(storage))
+            }
+
             (lhs, rhs) => {
                 // Should not happen because of the same device check above but we're defensive
                 // anyway.
@@ -186,6 +212,10 @@ impl Storage {
                 let storage = storage.reduce_op(op, layout, s)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.reduce_op(op, layout, s)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -204,6 +234,10 @@ impl Storage {
                 let storage = storage.to_dtype(layout, dtype)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.to_dtype(layout, dtype)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -221,6 +255,10 @@ impl Storage {
             Self::Metal(storage) => {
                 let (storage, shape) = c.metal_fwd(storage, l)?;
                 Ok((Self::Metal(storage), shape))
+            }
+            Self::MemOS(storage) => {
+                let (storage, shape) = c.cpu_fwd(&storage.buffer(), l)?;
+                Ok((Self::MemOS(MemOSStorage::from(storage)), shape))
             }
         }
     }
@@ -247,6 +285,11 @@ impl Storage {
                 let (s, shape) = c.metal_fwd(s1, l1, s2, l2)?;
                 Ok((Self::Metal(s), shape))
             }
+            (Self::MemOS(s1), Self::MemOS(s2)) => {
+                let (storage, shape) = c.cpu_fwd(&s1.buffer(), l1, &s2.buffer(), l2)?;
+                Ok((Self::MemOS(MemOSStorage::from(storage)), shape))
+            }
+
             _ => unreachable!(),
         }
     }
@@ -276,6 +319,11 @@ impl Storage {
                 let (s, shape) = c.metal_fwd(s1, l1, s2, l2, s3, l3)?;
                 Ok((Self::Metal(s), shape))
             }
+            (Self::MemOS(s1), Self::MemOS(s2), Self::MemOS(s3)) => {
+                let (storage, shape) =
+                    c.cpu_fwd(&s1.buffer(), l1, &s2.buffer(), l2, &s3.buffer(), l3)?;
+                Ok((Self::MemOS(MemOSStorage::from(storage)), shape))
+            }
             _ => unreachable!(),
         }
     }
@@ -286,6 +334,7 @@ impl Storage {
             Self::Cpu(storage) => c.cpu_fwd(storage, l),
             Self::Cuda(storage) => c.cuda_fwd(storage, l),
             Self::Metal(storage) => c.metal_fwd(storage, l),
+            Self::MemOS(storage) => c.cpu_fwd(&mut storage.buffer_mut(), l),
         }
     }
 
@@ -302,6 +351,9 @@ impl Storage {
             (Self::Cpu(s1), Self::Cpu(s2)) => c.cpu_fwd(s1, l1, s2, l2),
             (Self::Cuda(s1), Self::Cuda(s2)) => c.cuda_fwd(s1, l1, s2, l2),
             (Self::Metal(s1), Self::Metal(s2)) => c.metal_fwd(s1, l1, s2, l2),
+            (Self::MemOS(s1), Self::MemOS(s2)) => {
+                c.cpu_fwd(&mut s1.buffer_mut(), l1, &s2.buffer(), l2)
+            }
             _ => unreachable!(),
         }
     }
@@ -324,6 +376,9 @@ impl Storage {
             (Self::Metal(s1), Self::Metal(s2), Self::Metal(s3)) => {
                 c.metal_fwd(s1, l1, s2, l2, s3, l3)
             }
+            (Self::MemOS(s1), Self::MemOS(s2), Self::MemOS(s3)) => {
+                c.cpu_fwd(&mut s1.buffer_mut(), l1, &s2.buffer(), l2, &s3.buffer(), l3)
+            }
             _ => unreachable!(),
         }
     }
@@ -342,6 +397,10 @@ impl Storage {
             Self::Metal(storage) => {
                 let storage = storage.unary_impl::<B>(layout)?;
                 Ok(Self::Metal(storage))
+            }
+            Self::MemOS(storage) => {
+                let storage = storage.unary_impl::<B>(layout)?;
+                Ok(Self::MemOS(storage))
             }
         }
     }
@@ -368,6 +427,11 @@ impl Storage {
                 let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(lhs), Self::MemOS(rhs)) => {
+                let storage = lhs.binary_impl::<B>(rhs, lhs_layout, rhs_layout)?;
+                Ok(Self::MemOS(storage))
+            }
+
             (lhs, rhs) => {
                 // Should not happen because of the same device check above but we're defensive
                 // anyway.
@@ -404,6 +468,11 @@ impl Storage {
                 let s = inp.conv1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::MemOS(inp), Storage::MemOS(kernel)) => {
+                let s = inp.conv1d(l, kernel, kernel_l, params)?;
+                Ok(Self::MemOS(s))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -436,6 +505,11 @@ impl Storage {
                 let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::MemOS(inp), Storage::MemOS(kernel)) => {
+                let s = inp.conv_transpose1d(l, kernel, kernel_l, params)?;
+                Ok(Self::MemOS(s))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -468,6 +542,11 @@ impl Storage {
                 let s = inp.conv2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::MemOS(inp), Storage::MemOS(kernel)) => {
+                let s = inp.conv2d(l, kernel, kernel_l, params)?;
+                Ok(Self::MemOS(s))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -500,6 +579,11 @@ impl Storage {
                 let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
                 Ok(Self::Metal(s))
             }
+            (Storage::MemOS(inp), Storage::MemOS(kernel)) => {
+                let s = inp.conv_transpose2d(l, kernel, kernel_l, params)?;
+                Ok(Self::MemOS(s))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -529,6 +613,10 @@ impl Storage {
                 let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.avg_pool2d(layout, kernel_size, stride)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -552,6 +640,10 @@ impl Storage {
                 let storage = storage.max_pool2d(layout, kernel_size, stride)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.max_pool2d(layout, kernel_size, stride)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
 
@@ -570,6 +662,10 @@ impl Storage {
                 let storage = storage.upsample_nearest1d(layout, sz)?;
                 Ok(Self::Metal(storage))
             }
+            Self::MemOS(storage) => {
+                let storage = storage.upsample_nearest1d(layout, sz)?;
+                Ok(Self::MemOS(storage))
+            }
         }
     }
     #[tracing::instrument(level=tracing::Level::TRACE, skip_all)]
@@ -587,6 +683,10 @@ impl Storage {
             Self::Metal(storage) => {
                 let storage = storage.upsample_nearest2d(layout, h, w)?;
                 Ok(Self::Metal(storage))
+            }
+            Self::MemOS(storage) => {
+                let storage = storage.upsample_nearest2d(layout, h, w)?;
+                Ok(Self::MemOS(storage))
             }
         }
     }
@@ -615,6 +715,10 @@ impl Storage {
             (Self::Metal(cond), Self::Metal(t), Self::Metal(f)) => {
                 let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
                 Ok(Self::Metal(storage))
+            }
+            (Self::MemOS(cond), Self::MemOS(t), Self::MemOS(f)) => {
+                let storage = cond.where_cond(layout, t, layout_t, f, layout_f)?;
+                Ok(Self::MemOS(storage))
             }
             (_, lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
@@ -647,6 +751,11 @@ impl Storage {
                 let storage = s.gather(l, indexes, indexes_l, d)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(s), Self::MemOS(indexes)) => {
+                let storage = s.gather(l, indexes, indexes_l, d)?;
+                Ok(Self::MemOS(storage))
+            }
+
             _ => unreachable!(),
         }
     }
@@ -672,6 +781,10 @@ impl Storage {
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
             }
+            (Self::MemOS(s), Self::MemOS(indexes), Self::MemOS(source)) => {
+                s.scatter_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
+
             _ => unreachable!(),
         }
         Ok(())
@@ -698,6 +811,10 @@ impl Storage {
             (Self::Metal(s), Self::Metal(indexes), Self::Metal(source)) => {
                 s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
             }
+            (Self::MemOS(s), Self::MemOS(indexes), Self::MemOS(source)) => {
+                s.scatter_add_set(l, indexes, indexes_l, source, source_l, d)?;
+            }
+
             _ => unreachable!(),
         }
         Ok(())
@@ -728,6 +845,11 @@ impl Storage {
                 let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(s), Self::MemOS(indexes), Self::MemOS(source)) => {
+                let storage = s.index_add(l, indexes, indexes_l, source, source_l, d)?;
+                Ok(Self::MemOS(storage))
+            }
+
             _ => unreachable!(),
         }
     }
@@ -754,6 +876,11 @@ impl Storage {
                 let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(lhs), Self::MemOS(rhs)) => {
+                let storage = lhs.index_select(rhs, lhs_l, rhs_l, d)?;
+                Ok(Self::MemOS(storage))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -786,6 +913,11 @@ impl Storage {
                 let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
                 Ok(Self::Metal(storage))
             }
+            (Self::MemOS(lhs), Self::MemOS(rhs)) => {
+                let storage = lhs.matmul(rhs, bmnk, lhs_layout, rhs_layout)?;
+                Ok(Self::MemOS(storage))
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -809,6 +941,10 @@ impl Storage {
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
             }
+            (Self::MemOS(src), Self::MemOS(dst)) => {
+                Ok(src.copy_strided_src(dst, dst_offset, src_l)?)
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),
@@ -838,6 +974,10 @@ impl Storage {
             (Self::Metal(src), Self::Metal(dst)) => {
                 Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
             }
+            (Self::MemOS(src), Self::MemOS(dst)) => {
+                Ok(src.copy2d(dst, d1, d2, src_s, dst_s, src_o, dst_o)?)
+            }
+
             (lhs, rhs) => Err(Error::DeviceMismatchBinaryOp {
                 lhs: lhs.device().location(),
                 rhs: rhs.device().location(),

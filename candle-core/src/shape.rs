@@ -3,9 +3,11 @@
 use crate::{Error, Result};
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct Shape(Vec<usize>);
+pub struct Shape(heapless::Vec<usize, MAX_SHAPE_LEN>);
 
-pub const SCALAR: Shape = Shape(vec![]);
+const MAX_SHAPE_LEN: usize = 8;
+
+pub const SCALAR: Shape = Shape(heapless::Vec::new());
 
 impl std::fmt::Debug for Shape {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -15,31 +17,31 @@ impl std::fmt::Debug for Shape {
 
 impl<const C: usize> From<&[usize; C]> for Shape {
     fn from(dims: &[usize; C]) -> Self {
-        Self(dims.to_vec())
+        Self(heapless::Vec::from_slice(dims).unwrap())
     }
 }
 
 impl From<&[usize]> for Shape {
     fn from(dims: &[usize]) -> Self {
-        Self(dims.to_vec())
+        Self(heapless::Vec::from_slice(dims).unwrap())
     }
 }
 
 impl From<&Shape> for Shape {
     fn from(shape: &Shape) -> Self {
-        Self(shape.0.to_vec())
+        Self(heapless::Vec::from_slice(&shape.0).unwrap())
     }
 }
 
 impl From<()> for Shape {
     fn from(_: ()) -> Self {
-        Self(vec![])
+        Self(heapless::Vec::new())
     }
 }
 
 impl From<usize> for Shape {
     fn from(d1: usize) -> Self {
-        Self(vec![d1])
+        Self(heapless::Vec::from_slice(&[d1]).unwrap())
     }
 }
 
@@ -47,7 +49,7 @@ macro_rules! impl_from_tuple {
     ($tuple:ty, $($index:tt),+) => {
         impl From<$tuple> for Shape {
             fn from(d: $tuple) -> Self {
-                Self(vec![$(d.$index,)+])
+                Self(heapless::Vec::from_slice(&[$(d.$index,)+]).unwrap())
             }
         }
     }
@@ -62,7 +64,7 @@ impl_from_tuple!((usize, usize, usize, usize, usize, usize), 0, 1, 2, 3, 4, 5);
 
 impl From<Vec<usize>> for Shape {
     fn from(dims: Vec<usize>) -> Self {
-        Self(dims)
+        Self(heapless::Vec::from_slice(&dims).unwrap())
     }
 }
 
@@ -104,7 +106,7 @@ macro_rules! extract_dims {
 
 impl Shape {
     pub fn from_dims(dims: &[usize]) -> Self {
-        Self(dims.to_vec())
+        Self(heapless::Vec::from_slice(dims).unwrap())
     }
 
     /// The rank is the number of dimensions, 0 for a scalar value, 1 for a vector, etc.
@@ -113,7 +115,7 @@ impl Shape {
     }
 
     pub fn into_dims(self) -> Vec<usize> {
-        self.0
+        self.0.to_vec()
     }
 
     /// The dimensions as a slice of `usize`.
@@ -182,7 +184,7 @@ impl Shape {
     /// Modifies the shape by adding a list of additional dimensions at the end of the existing
     /// dimensions.
     pub fn extend(mut self, additional_dims: &[usize]) -> Self {
-        self.0.extend(additional_dims);
+        self.0.extend(additional_dims.iter().copied());
         self
     }
 

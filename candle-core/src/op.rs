@@ -71,13 +71,15 @@ pub enum UnaryOp {
     Sign,
 }
 
+const OP_MAX: usize = 4;
+
 #[derive(Clone)]
 pub enum Op {
     Binary(Tensor, Tensor, BinaryOp),
     Unary(Tensor, UnaryOp),
     Cmp(Tensor, CmpOp),
     // The third argument is the reduced shape with `keepdim=true`.
-    Reduce(Tensor, ReduceOp, Vec<usize>),
+    Reduce(Tensor, ReduceOp, heapless::Vec<usize, OP_MAX>),
     Matmul(Tensor, Tensor),
     Gather(Tensor, Tensor, usize),
     Scatter(Tensor, Tensor, Tensor, usize),
@@ -146,7 +148,7 @@ pub enum Op {
         target_w: usize,
     },
 
-    Cat(Vec<Tensor>, usize),
+    Cat(heapless::Vec<Tensor, OP_MAX>, usize),
 
     #[allow(dead_code)] // add is currently unused.
     Affine {
@@ -162,7 +164,7 @@ pub enum Op {
     Reshape(Tensor),
     ToDevice(Tensor),
     Transpose(Tensor, usize, usize),
-    Permute(Tensor, Vec<usize>),
+    Permute(Tensor, heapless::Vec<usize, OP_MAX>),
     Elu(Tensor, f64),
     Powf(Tensor, f64),
     CustomOp1(

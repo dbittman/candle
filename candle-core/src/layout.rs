@@ -1,19 +1,22 @@
 //! Tensor Layouts including contiguous or sparse strides
 use crate::{Error, Result, Shape};
 
+const MAX_LAYOUT_STRIDE: usize = 4;
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Layout {
     shape: Shape,
     // The strides are given in number of elements and not in bytes.
-    stride: Vec<usize>,
+    stride: heapless::Vec<usize, MAX_LAYOUT_STRIDE>,
     start_offset: usize,
 }
 
 impl Layout {
     pub fn new(shape: Shape, stride: Vec<usize>, start_offset: usize) -> Self {
+        tracing::debug!("{} {}", shape.dims().len(), stride.len());
         Self {
             shape,
-            stride,
+            stride: heapless::Vec::from_slice(&stride).unwrap(),
             start_offset,
         }
     }
@@ -23,7 +26,7 @@ impl Layout {
         let stride = shape.stride_contiguous();
         Self {
             shape,
-            stride,
+            stride: heapless::Vec::from_slice(&stride).unwrap(),
             start_offset,
         }
     }
@@ -122,7 +125,7 @@ impl Layout {
         stride.swap(dim1, dim2);
         Ok(Self {
             shape: Shape::from(dims),
-            stride,
+            stride: heapless::Vec::from_slice(&stride).unwrap(),
             start_offset: self.start_offset,
         })
     }
@@ -147,7 +150,7 @@ impl Layout {
         }
         Ok(Self {
             shape: Shape::from(perm_dims),
-            stride: perm_stride,
+            stride: heapless::Vec::from_slice(&perm_stride).unwrap(),
             start_offset: self.start_offset,
         })
     }
@@ -182,7 +185,7 @@ impl Layout {
         }
         Ok(Self {
             shape,
-            stride,
+            stride: heapless::Vec::from_slice(&stride).unwrap(),
             start_offset: self.start_offset,
         })
     }

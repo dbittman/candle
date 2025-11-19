@@ -6,6 +6,7 @@
 
 use crate::models::with_tracing::QMatMul;
 use crate::quantized_var_builder::VarBuilder;
+use candle::memos_backend::MemOSBuilder;
 use candle::quantized::QTensor;
 use candle::{Module, Result, Tensor};
 
@@ -105,6 +106,14 @@ pub struct RmsNorm {
 }
 
 impl RmsNorm {
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            weight: self.weight.move_to_memos(ctx)?,
+            eps: self.eps,
+            span: self.span.clone(),
+        })
+    }
+
     pub fn new(size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
         let span = tracing::span!(tracing::Level::TRACE, "rms-norm");
         let weight = vb.get(size, "weight")?.dequantize(vb.device())?;
