@@ -3,9 +3,10 @@ use crate::{
     cpu_backend::CpuDevice,
     memos_backend::{MemOSBuilder, MemOSDevice, MemOSStorage},
     tensor::{Invariable, MaybeRef},
-    Context, CpuStorage, DType, Device, Result, Shape, Storage, Tensor,
+    Context, CpuStorage, DType, Device, Result, Shape, Storage, Tensor, WithDType,
 };
 use k_quants::*;
+use safetensors::Dtype;
 use std::{borrow::Cow, sync::Arc};
 
 #[cfg(target_feature = "avx")]
@@ -48,24 +49,45 @@ impl Invariable for QTensor {
         Self: Sized,
     {
         let s = match &self.storage {
+            QStorage::Cpu(quantized_type) => todo!(),
+            QStorage::Metal(qmetal_storage) => todo!(),
+            QStorage::Cuda(qcuda_storage) => todo!(),
+            QStorage::MemOS(qmem_osstorage) => qmem_osstorage.clone(),
+        };
+        /*
+        let s = match &self.storage {
             QStorage::MemOS(qmem_osstorage) => {
-                let ptr = qmem_osstorage.buffer.inner_ref().as_ptr();
-                let len = qmem_osstorage.buffer.inner_ref().storage_size_in_bytes()
-                    / self.dtype().type_size();
+                let ptr = qmem_osstorage.buffer.as_ref().unwrap().as_ptr();
+                let len = qmem_osstorage.buffer.as_ref().unwrap().len();
+                tracing::debug!("moving QTensor, {}", len);
                 match self.dtype() {
                     GgmlDType::F32 => {
                         let slice = unsafe { core::slice::from_raw_parts(ptr as *const f32, len) };
+                        let gp = ctx.alloc_slice(slice);
                         QMemOSStorage {
-                            buffer: MaybeRef::new(Box::new(slice.to_vec())),
+                            buffer: Some(MemOSVec {
+                                buf: MaybeRef::new_gp(gp.cast()),
+                                dtype: self.dtype(),
+                                len,
+                            }),
                             dtype: self.dtype(),
+                            id: 0,
+                            off: 0,
                         }
                     }
                     GgmlDType::Q8_0 => {
                         let slice =
                             unsafe { core::slice::from_raw_parts(ptr as *const BlockQ8_0, len) };
+                        let gp = ctx.alloc_slice(slice);
                         QMemOSStorage {
-                            buffer: MaybeRef::new(Box::new(slice.to_vec())),
+                            buffer: Some(MemOSVec {
+                                buf: MaybeRef::new_gp(gp.cast()),
+                                len,
+                                dtype: self.dtype(),
+                            }),
                             dtype: self.dtype(),
+                            id: 0,
+                            off: 0,
                         }
                     }
                     _ => todo!(),
@@ -73,6 +95,7 @@ impl Invariable for QTensor {
             }
             _ => todo!(),
         };
+        */
         Ok(Self {
             storage: QStorage::MemOS(s),
             shape: self.shape().clone(),
@@ -103,170 +126,68 @@ impl Device {
     }
 }
 
+#[derive(Clone)]
 pub struct QMemOSStorage {
     dtype: GgmlDType,
-    buffer: MaybeRef<Box<dyn QuantizedType>>,
+    buffer: Option<MemOSVec>,
+    id: u128,
+    off: u64,
 }
 
 impl From<Box<dyn QuantizedType>> for QMemOSStorage {
     fn from(value: Box<dyn QuantizedType>) -> Self {
-        Self {
-            dtype: value.dtype(),
-            buffer: MaybeRef::new(value),
-        }
-    }
-}
-impl<T: GgmlType + Sized + Clone + 'static> From<Vec<T>> for QMemOSStorage {
-    fn from(value: Vec<T>) -> Self {
-        Self {
-            dtype: T::DTYPE,
-            buffer: MaybeRef::new(Box::new(value)),
-        }
-    }
-}
-
-impl QMemOSStorage {
-    /*
-    fn as_slice<T: GgmlType>(&self) -> &[T] {
-        tracing::trace!(
-            "as slice: {:?} {} {} {}",
-            T::DTYPE,
-            self.buffer.inner_ref().len(),
-            T::DTYPE.type_size(),
-            T::DTYPE.block_size(),
-        );
-        let p = self.buffer.inner_ref().as_ptr() as *const T;
-        let len = self.buffer.inner_ref().len() / size_of::<T>();
-        unsafe { core::slice::from_raw_parts(p, len) }
-    }
-
-    fn matmul_t(&self, mkn: (usize, usize, usize), lhs: &[f32], dst: &mut [f32]) -> Result<()> {
-        match self.dtype {
-            GgmlDType::F32 => k_quants::matmul::<f32>(mkn, lhs, self.as_slice(), dst),
-            GgmlDType::F16 => todo!(),
-            GgmlDType::Q4_0 => todo!(),
-            GgmlDType::Q4_1 => todo!(),
-            GgmlDType::Q5_0 => todo!(),
-            GgmlDType::Q5_1 => todo!(),
-            GgmlDType::Q8_0 => k_quants::matmul::<BlockQ8_0>(mkn, lhs, self.as_slice(), dst),
-            GgmlDType::Q8_1 => todo!(),
-            GgmlDType::Q2K => todo!(),
-            GgmlDType::Q3K => todo!(),
-            GgmlDType::Q4K => todo!(),
-            GgmlDType::Q5K => todo!(),
-            GgmlDType::Q6K => todo!(),
-            GgmlDType::Q8K => todo!(),
-        }
-    }
-
-    pub fn dtype(&self) -> GgmlDType {
-        self.dtype
-    }
-
-    pub fn dequantize(&self, elem_count: usize) -> Result<MemOSStorage> {
-        use crate::quantized::k_quants::GgmlType;
-        tracing::debug!("dequantize: {} {:?}", elem_count, self.dtype());
-
-        let mut out = vec![0.0; elem_count];
-        let block_len = elem_count / self.dtype.block_size();
-        let buffer = self.buffer.inner_ref().as_slice();
-        match self.dtype {
+        let dtype = value.dtype();
+        let p = value.as_ptr();
+        match dtype {
             GgmlDType::F32 => {
-                let vec: Vec<f32> = read_to_vec(&buffer, block_len);
-                f32::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::F16 => {
-                let vec: Vec<half::f16> = read_to_vec(&buffer, block_len);
-                half::f16::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q4_0 => {
-                let vec: Vec<crate::quantized::BlockQ4_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4_0::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q4_1 => {
-                let vec: Vec<crate::quantized::BlockQ4_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4_1::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q5_0 => {
-                let vec: Vec<crate::quantized::BlockQ5_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5_0::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q5_1 => {
-                let vec: Vec<crate::quantized::BlockQ5_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5_1::to_float(&vec, &mut out)?;
+                let p = p.cast::<f32>();
+                let len = value.storage_size_in_bytes() / dtype.type_size();
+                tracing::info!(
+                    "!! {} {} {} {}",
+                    value.size(),
+                    dtype.type_size(),
+                    len,
+                    f32::BLCK_SIZE
+                );
+                let arc = Arc::new(value);
+                let buf = MaybeRef::new_ref(p, arc);
+                Self {
+                    dtype,
+                    id: 0,
+                    off: 0,
+                    buffer: Some(MemOSVec::new(buf, len)),
+                }
             }
             GgmlDType::Q8_0 => {
-                let vec: Vec<crate::quantized::BlockQ8_0> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8_0::to_float(&vec, &mut out)?;
+                let p = p.cast::<BlockQ8_0>();
+                let len = (value.storage_size_in_bytes() / BlockQ8_0::DTYPE.type_size());
+                tracing::info!(
+                    "!! {} {} {} {} align {}",
+                    value.size(),
+                    BlockQ8_0::DTYPE.type_size(),
+                    len,
+                    BlockQ8_0::BLCK_SIZE,
+                    align_of::<BlockQ8_0>()
+                );
+                let arc = Arc::new(value);
+                let buf = MaybeRef::new_ref(p, arc);
+                Self {
+                    dtype,
+                    id: 0,
+                    off: 0,
+                    buffer: Some(MemOSVec::new(buf, len)),
+                }
             }
-            GgmlDType::Q8_1 => {
-                let vec: Vec<crate::quantized::BlockQ8_1> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8_1::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q2K => {
-                let vec: Vec<crate::quantized::BlockQ2K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ2K::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q3K => {
-                let vec: Vec<crate::quantized::BlockQ3K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ3K::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q4K => {
-                let vec: Vec<crate::quantized::BlockQ4K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ4K::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q5K => {
-                let vec: Vec<crate::quantized::BlockQ5K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ5K::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q6K => {
-                let vec: Vec<crate::quantized::BlockQ6K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ6K::to_float(&vec, &mut out)?;
-            }
-            GgmlDType::Q8K => {
-                let vec: Vec<crate::quantized::BlockQ8K> = read_to_vec(&buffer, block_len);
-                crate::quantized::BlockQ8K::to_float(&vec, &mut out)?;
-            }
+            _ => todo!(),
         }
-
-        let buffer = CpuStorage::F32(out.into());
-        Ok(MemOSStorage::from(buffer))
     }
-
-    pub fn quantize(&mut self, src: &MemOSStorage) -> Result<()> {
-        panic!();
-        // Quantization only happens on CPU for now.
-        let src = src.to_cpu::<f32>()?;
-        let elem_count = src.len();
-        let src = crate::Storage::Cpu(crate::CpuStorage::F32(src.into()));
-        let mut qcpu_storage = crate::Device::Cpu.qzeros(elem_count, self.dtype)?;
-        qcpu_storage.quantize(&src)?;
-
-        //let buffer = self.device.new_buffer_with_data(&qcpu_storage.data()?)?;
-        self.buffer = MaybeRef::new(qcpu_storage.data()?.to_vec());
-        Ok(())
-    }
-
-    pub fn storage_size_in_bytes(&self) -> usize {
-        self.buffer.inner_ref().len()
-    }
-    */
 }
 
-fn read_to_vec<T: Clone>(buffer: &[u8], n: usize) -> Vec<T> {
-    //tracing::debug!("rtv: {}", n);
-    let ptr = buffer.as_ptr() as *const T;
-    assert!(!ptr.is_null());
-    let slice = unsafe { std::slice::from_raw_parts(ptr, n) };
-    slice.to_vec()
-}
-
-fn slice_to_u8_vec<T: Clone>(buffer: &[T]) -> Vec<u8> {
-    //tracing::debug!("stv: {}", buffer.len());
-    let ptr = buffer.as_ptr() as *const u8;
-    assert!(!ptr.is_null());
-    let slice = unsafe { std::slice::from_raw_parts(ptr, buffer.len() * size_of::<T>()) };
-    slice.to_vec()
+impl<T: GgmlType + Sized + Clone + 'static> From<Vec<T>> for QMemOSStorage {
+    fn from(value: Vec<T>) -> Self {
+        let value = Box::new(value);
+        <Self as From<Box<dyn QuantizedType>>>::from(value)
+    }
 }
 
 pub enum QStorage {
@@ -282,7 +203,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.block_size(),
             QStorage::Metal(storage) => storage.dtype().block_size(),
             QStorage::Cuda(storage) => storage.dtype().block_size(),
-            QStorage::MemOS(storage) => storage.buffer.inner_ref().block_size(),
+            QStorage::MemOS(storage) => storage.buffer.as_ref().unwrap().block_size(),
         }
     }
 
@@ -291,7 +212,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.dtype(),
             QStorage::Metal(storage) => storage.dtype(),
             QStorage::Cuda(storage) => storage.dtype(),
-            QStorage::MemOS(storage) => storage.buffer.inner_ref().dtype(),
+            QStorage::MemOS(storage) => storage.buffer.as_ref().unwrap().dtype(),
         }
     }
 
@@ -309,7 +230,7 @@ impl QStorage {
             QStorage::Cpu(storage) => storage.storage_size_in_bytes(),
             QStorage::Metal(storage) => storage.storage_size_in_bytes(),
             QStorage::Cuda(storage) => storage.storage_size_in_bytes(),
-            QStorage::MemOS(storage) => storage.buffer.inner_ref().storage_size_in_bytes(),
+            QStorage::MemOS(storage) => storage.buffer.as_ref().unwrap().storage_size_in_bytes(),
         }
     }
 
@@ -323,7 +244,8 @@ impl QStorage {
             (QStorage::MemOS(storage), Storage::MemOS(src)) => {
                 storage
                     .buffer
-                    .inner_mut()
+                    .as_mut()
+                    .unwrap()
                     .from_float(src.buffer.as_slice::<f32>()?)?;
             }
 
@@ -338,7 +260,7 @@ impl QStorage {
             QStorage::Metal(storage) => Ok(Storage::Metal(storage.dequantize(elem_count)?)),
             QStorage::Cuda(storage) => Ok(Storage::Cuda(storage.dequantize(elem_count)?)),
             QStorage::MemOS(storage) => Ok(Storage::MemOS(MemOSStorage::from(
-                storage.buffer.inner_ref().dequantize(elem_count)?,
+                storage.buffer.as_ref().unwrap().dequantize(elem_count)?,
             ))),
         }
     }
@@ -352,8 +274,8 @@ impl QStorage {
                 Ok(Cow::from(data))
             }
             QStorage::MemOS(storage) => {
-                let data_ptr = storage.buffer.inner_ref().as_ptr();
-                let size_in_bytes = storage.buffer.inner_ref().storage_size_in_bytes();
+                let data_ptr = storage.buffer.as_ref().unwrap().as_ptr();
+                let size_in_bytes = storage.buffer.as_ref().unwrap().storage_size_in_bytes();
                 let data = unsafe { std::slice::from_raw_parts(data_ptr, size_in_bytes) };
                 Ok(Cow::from(data))
             }
@@ -491,6 +413,95 @@ pub trait QuantizedType: Send + Sync {
     #[allow(clippy::wrong_self_convention)]
     fn from_float(&mut self, xs: &[f32]) -> Result<()>;
     fn size(&self) -> usize;
+}
+
+#[derive(Clone)]
+pub struct MemOSVec {
+    buf: MaybeRef<u8>,
+    dtype: GgmlDType,
+    len: usize,
+}
+
+impl MemOSVec {
+    pub fn new<T: GgmlType>(buf: MaybeRef<T>, len: usize) -> Self {
+        Self {
+            buf: buf.cast::<u8>(),
+            len: len * T::DTYPE.type_size(),
+            dtype: T::DTYPE,
+        }
+    }
+
+    pub fn as_slice<T: GgmlType>(&self) -> &[T] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self.buf.resolve() as *const T,
+                self.len / T::DTYPE.type_size(),
+            )
+        }
+    }
+
+    pub fn as_slice_mut<T: GgmlType>(&self) -> &mut [T] {
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.buf.resolve() as *mut T,
+                self.len / T::DTYPE.type_size(),
+            )
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl QuantizedType for MemOSVec {
+    fn matmul_t(&self, mkn: (usize, usize, usize), lhs: &[f32], dst: &mut [f32]) -> Result<()> {
+        match self.dtype {
+            GgmlDType::F32 => k_quants::matmul(mkn, lhs, self.as_slice::<f32>(), dst),
+            GgmlDType::Q8_0 => k_quants::matmul(mkn, lhs, self.as_slice::<BlockQ8_0>(), dst),
+            _ => todo!(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        self.len() * self.dtype.type_size()
+    }
+
+    fn from_float(&mut self, xs: &[f32]) -> Result<()> {
+        //T::from_float(xs, self.as_slice_mut())
+        match self.dtype {
+            GgmlDType::F32 => f32::from_float(xs, self.as_slice_mut()),
+            GgmlDType::Q8_0 => BlockQ8_0::from_float(xs, self.as_slice_mut()),
+            _ => todo!(),
+        }
+    }
+
+    fn dtype(&self) -> GgmlDType {
+        self.dtype
+    }
+
+    fn block_size(&self) -> usize {
+        self.dtype.block_size()
+    }
+
+    fn dequantize(&self, elem_count: usize) -> Result<CpuStorage> {
+        let mut ys = vec![0.0f32; elem_count];
+        match self.dtype {
+            GgmlDType::F32 => f32::to_float(self.as_slice(), &mut ys)?,
+            GgmlDType::Q8_0 => BlockQ8_0::to_float(self.as_slice(), &mut ys)?,
+            _ => todo!(),
+        }
+
+        Ok(CpuStorage::F32(ys.into()))
+    }
+
+    fn storage_size_in_bytes(&self) -> usize {
+        self.len() * self.dtype.type_size()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.as_slice::<f32>().as_ptr() as *const u8
+    }
 }
 
 impl<T: k_quants::GgmlType + Send + Sync> QuantizedType for Vec<T> {
@@ -732,7 +743,23 @@ impl crate::CustomOp1 for QTensor {
         #[allow(clippy::infallible_destructuring_match)]
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
-            QStorage::MemOS(storage) => storage.buffer.inner_ref(),
+            QStorage::MemOS(storage) => {
+                let st = storage.buffer.as_ref().unwrap();
+
+                tracing::info!("==> {} {:?}", st.len, st.dtype);
+                let s = <f32 as WithDType>::to_cpu_storage(st.as_slice(), false);
+                let slice = <f32 as WithDType>::cpu_storage_as_slice(&s)?;
+                //let slice = st.as_slice::<f32>();
+                let slice =
+                    &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+                let mut dst_storage = vec![0f32; dst_shape.elem_count()];
+                storage.buffer.as_ref().unwrap().matmul_t(
+                    (dst_shape.elem_count() / n, k, n),
+                    slice,
+                    &mut dst_storage,
+                )?;
+                return Ok((crate::CpuStorage::F32(dst_storage.into()), dst_shape));
+            }
             QStorage::Metal(_) | QStorage::Cuda(_) => {
                 crate::bail!("Invalid storage")
             }

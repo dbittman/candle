@@ -17,13 +17,15 @@
 //!
 
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 
 use crate::quantized_nn::RmsNorm;
 use candle::memos_backend::MemOSBuilder;
 use candle::quantized::QTensor;
 use candle::quantized::{ggml_file, gguf_file};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{bail, DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module};
+use tracing::Span;
 
 pub const MAX_SEQ_LEN: usize = 4096;
 
@@ -45,7 +47,10 @@ impl QMatMul {
     fn from_qtensor(qtensor: QTensor) -> Result<Self> {
         let inner = candle::quantized::QMatMul::from_qtensor(qtensor)?;
         let span = tracing::span!(tracing::Level::TRACE, "qmatmul");
-        Ok(Self { inner, span })
+        Ok(Self {
+            inner,
+            span: Span::none(),
+        })
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
@@ -316,14 +321,17 @@ pub struct ModelWeights {
     layers: heapless::Vec<LayerWeights, 32>,
     norm: RmsNorm,
     output: QMatMul,
-    masks: HashMap<usize, Tensor>,
+    masks: ManuallyDrop<HashMap<usize, Tensor>>,
     span: tracing::Span,
     span_output: tracing::Span,
 }
 
 impl ModelWeights {
-    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
-        Ok(Self {
+    pub fn reset_masks(&mut self) {
+        self.masks = ManuallyDrop::new(HashMap::new());
+    }
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<&'static mut ModelWeights> {
+        let this = Self {
             tok_embeddings: self.tok_embeddings.move_to_memos(ctx)?,
             layers: self
                 .layers
@@ -332,10 +340,15 @@ impl ModelWeights {
                 .collect::<Result<_>>()?,
             norm: self.norm.move_to_memos(ctx)?,
             output: self.output.move_to_memos(ctx)?,
-            masks: HashMap::new(),
+            masks: ManuallyDrop::new(HashMap::new()),
             span: self.span.clone(),
             span_output: self.span_output.clone(),
-        })
+        };
+
+        let this = ctx.alloc(this);
+        ctx.imp.write_hdr(this.off, this.id);
+
+        Ok(unsafe { (this.resolve() as *mut ModelWeights).as_mut().unwrap() })
     }
 }
 
@@ -362,7 +375,6 @@ impl ModelWeights {
     pub fn print_out(&self) {
         println!("emb: {:?}", self.tok_embeddings);
         println!("nr_layers: {}", self.layers.len());
-        println!("masks ({}): {:?}", self.masks.len(), self.masks);
         println!("out: {:?}", self.output);
         println!("norm: {:?}", self.norm);
     }
@@ -412,9 +424,9 @@ impl ModelWeights {
                 sin: sin.clone(),
                 neg_inf: neg_inf.clone(),
                 kv_cache: None,
-                span_attn,
-                span_rot,
-                span_mlp,
+                span_attn: Span::none(),
+                span_rot: Span::none(),
+                span_mlp: Span::none(),
             })
         }
         let span = tracing::span!(tracing::Level::TRACE, "model");
@@ -424,9 +436,9 @@ impl ModelWeights {
             layers: heapless::Vec::from_slice(&layers).unwrap(),
             norm,
             output: QMatMul::from_qtensor(output)?,
-            masks: HashMap::new(),
-            span,
-            span_output,
+            masks: ManuallyDrop::new(HashMap::new()),
+            span: Span::none(),
+            span_output: Span::none(),
         })
     }
 
@@ -548,7 +560,7 @@ impl ModelWeights {
             layers: heapless::Vec::from_slice(&layers).unwrap(),
             norm,
             output: QMatMul::from_qtensor(output)?,
-            masks: HashMap::new(),
+            masks: ManuallyDrop::new(HashMap::new()),
             span,
             span_output,
         })

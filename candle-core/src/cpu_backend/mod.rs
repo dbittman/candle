@@ -1,18 +1,21 @@
 //! Implementation of Backend Fns for CPU
-use std::mem::ManuallyDrop;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use half::{bf16, f16};
 use rayon::prelude::*;
+use ug::r#const::F32;
 
 use crate::{
-    DType, Error, IntDType, Layout, Result, Shape, WithDType,
     backend::{BackendDevice, BackendStorage},
+    memos_backend::MemOSBuilder,
     op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT},
+    tensor::MaybeRef,
+    DType, Error, IntDType, Layout, Result, Shape, WithDType,
 };
 
 mod utils;
 pub use utils::{
-    Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
+    binary_map, binary_map_vec, unary_map, unary_map_vec, Map1, Map1Any, Map2, Map2InPlace, Map2U8,
 };
 
 const USE_IM2COL_CONV1D: bool = true;
@@ -20,7 +23,7 @@ const USE_COL2IM_CONV1D_TR: bool = true;
 const USE_IM2COL_CONV2D: bool = true;
 
 #[derive(Debug)]
-pub struct MyVec<T>(ManuallyDrop<std::vec::Vec<T>>);
+pub struct MyVec<T>(MaybeRef<T>, usize);
 
 impl<T: Clone> MyVec<T> {
     #[cfg(not(target_os = "macos"))]
@@ -44,14 +47,20 @@ impl<T: Clone> MyVec<T> {
             slice.as_ptr(),
             slice.len()
         );
-        Self(ManuallyDrop::new(slice.to_vec()))
+        todo!()
+        //Self(MaybeRef::new_(slice.to_vec()))
+    }
+
+    pub fn as_slice(&self) -> &[T] {
+        let ptr = self.0.resolve();
+        unsafe { core::slice::from_raw_parts(ptr, self.1) }
     }
 }
 
 #[cfg(target_os = "macos")]
 impl<T: Clone> Clone for MyVec<T> {
     fn clone(&self) -> Self {
-        Self(ManuallyDrop::new(self.0.as_slice().to_vec()))
+        Self(MaybeRef::clone(&self.0), self.1)
     }
 }
 
@@ -62,42 +71,42 @@ impl<T: Clone> Clone for MyVec<T> {
     }
 }
 
-impl<T> AsRef<std::vec::Vec<T>> for MyVec<T> {
-    fn as_ref(&self) -> &std::vec::Vec<T> {
-        &self.0
-    }
-}
-
 impl<T> AsRef<[T]> for MyVec<T> {
     fn as_ref(&self) -> &[T] {
-        &self.0
+        let ptr = self.0.resolve();
+        unsafe { core::slice::from_raw_parts(ptr, self.1) }
     }
 }
 
 #[cfg(target_os = "macos")]
 impl<T> Drop for MyVec<T> {
     fn drop(&mut self) {
-        unsafe { ManuallyDrop::drop(&mut self.0) }
+        //unsafe { ManuallyDrop::drop(&mut self.0) }
     }
 }
 
 impl<T> std::ops::Deref for MyVec<T> {
-    type Target = std::vec::Vec<T>;
+    type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        let ptr = self.0.resolve();
+        unsafe { core::slice::from_raw_parts(ptr, self.1) }
     }
 }
 
 impl<T> std::ops::DerefMut for MyVec<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        let ptr = self.0.resolve() as *mut T;
+        unsafe { core::slice::from_raw_parts_mut(ptr, self.1) }
     }
 }
 
-impl<T> From<Vec<T>> for MyVec<T> {
+impl<T: 'static> From<Vec<T>> for MyVec<T> {
     fn from(value: Vec<T>) -> Self {
-        Self(ManuallyDrop::new(value))
+        let value = Arc::new(value);
+        let len = value.len();
+        let ptr = value.as_ptr().cast();
+        Self(MaybeRef::new_ref(ptr, value), len)
     }
 }
 
@@ -125,6 +134,39 @@ impl CpuStorage {
             })),
             _ => todo!(),
         }
+    }
+
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(match self {
+            Self::F32(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::F32(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::F64(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::F64(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::F16(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::F16(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::BF16(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::BF16(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::I64(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::I64(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::U32(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::U32(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+            Self::U8(mv) => {
+                let slice = ctx.alloc_slice(mv.as_slice());
+                Self::U8(MyVec(MaybeRef::new_gp(slice), mv.len()))
+            }
+        })
     }
 }
 
@@ -294,6 +336,7 @@ impl Map1Any for ReduceIndex {
         src_l: &Layout,
         wrap: W,
     ) -> Result<CpuStorage> {
+        tracing::info!("reduceidx: {:p}", src);
         if src_l.shape().elem_count() == 0 {
             Err(Error::EmptyTensor { op: "reduce" }.bt())?
         }
@@ -617,6 +660,7 @@ struct IndexSelect<'a, T: IntDType> {
 
 impl<I: IntDType> Map1 for IndexSelect<'_, I> {
     fn f<T: WithDType>(&self, src: &[T], layout: &Layout) -> Result<Vec<T>> {
+        tracing::info!("map1: {:p}", src);
         let src = match layout.contiguous_offsets() {
             Some((a, b)) => &src[a..b],
             None => Err(Error::RequiresContiguous { op: "index-select" }.bt())?,
@@ -644,7 +688,16 @@ impl<I: IntDType> Map1 for IndexSelect<'_, I> {
             let start_dst_idx = left_i * right_len * n_ids;
             for i in 0..n_ids {
                 let start_dst_idx = start_dst_idx + i * right_len;
+                tracing::info!("!! {} {} {}", self.ids_l.start_offset(), stride_ids, i);
                 let index = self.ids[self.ids_l.start_offset() + stride_ids * i];
+                tracing::info!(
+                    "Index: {}, {} {} {:?} {}",
+                    index,
+                    start_src_idx,
+                    start_dst_idx,
+                    dst_dims,
+                    src[0]
+                );
                 if index == I::max_value() {
                     dst[start_dst_idx..start_dst_idx + right_len].fill(T::zero());
                 } else {
@@ -1417,7 +1470,7 @@ impl Map2 for MatMul {
         rhs: &[T],
         rhs_l: &Layout,
     ) -> Result<Vec<T>> {
-        use gemm::{Parallelism, gemm};
+        use gemm::{gemm, Parallelism};
 
         match T::DTYPE {
             DType::F16 | DType::F32 | DType::F64 => {}

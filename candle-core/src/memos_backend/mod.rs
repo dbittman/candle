@@ -5,7 +5,9 @@ use crate::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvT
 use crate::cpu_backend::CpuDevice;
 use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
 use crate::{CpuStorage, DType, Layout, Result, WithDType};
-use std::sync::{Arc, RwLock};
+use std::any::type_name;
+use std::marker::PhantomData;
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug, Clone)]
 pub struct MemOSStorage {
@@ -301,6 +303,7 @@ impl BackendStorage for MemOSStorage {
     }
 
     fn index_select(&self, ids: &Self, src_l: &Layout, ids_l: &Layout, dim: usize) -> Result<Self> {
+        tracing::info!("ISM: {:p} {:p}", ids.buffer(), self.buffer());
         Ok(self.with_buffer(
             self.buffer()
                 .index_select(&*ids.buffer(), src_l, ids_l, dim)?,
@@ -383,7 +386,113 @@ impl MemOSStorage {
     pub(crate) fn to_cpu<T: Clone + WithDType>(&self) -> Result<Vec<T>> {
         Ok(self.buffer().as_slice::<T>()?.to_vec())
     }
+
+    pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
+        Ok(Self {
+            buffer: self.buffer.move_to_memos(ctx)?,
+            dtype: self.dtype.clone(),
+            device: MemOSDevice,
+        })
+    }
 }
 
-#[derive(Default)]
-pub struct MemOSBuilder {}
+pub struct MemOSBuilder {
+    pub imp: Box<dyn MemOSImp>,
+}
+
+pub trait MemOSImp {
+    fn alloc(&self, layout: std::alloc::Layout) -> (u128, u64, *mut u8);
+    fn write_hdr(&self, base_off: u64, id: u128);
+    fn get_base(&self) -> *const u8;
+}
+
+impl MemOSBuilder {
+    pub fn new(imp: Box<dyn MemOSImp>) -> Self {
+        Self { imp }
+    }
+
+    pub fn alloc<T>(&self, data: T) -> GPtr<T> {
+        let (id, off, ptr) = self.imp.alloc(std::alloc::Layout::new::<T>());
+        unsafe { ptr.cast::<T>().write(data) };
+        GPtr::new(id, off)
+    }
+
+    pub fn alloc_slice<T>(&self, data: &[T]) -> GPtr<T> {
+        let (id, off, ptr) = self
+            .imp
+            .alloc(std::alloc::Layout::array::<T>(data.len()).unwrap());
+        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, data.len() * size_of::<T>()) };
+        let data = unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), slice.len()) };
+        tracing::info!(
+            "alloc slice: {} {:p} {:p} {:p} {}",
+            data.len(),
+            slice,
+            data,
+            ptr,
+            type_name::<T>()
+        );
+        slice.copy_from_slice(data);
+        GPtr::new(id, off)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub struct GPtr<T> {
+    pub id: u128,
+    pub off: u64,
+    _pd: PhantomData<T>,
+}
+
+impl<T> GPtr<T> {
+    pub fn cast<U>(self) -> GPtr<U> {
+        GPtr {
+            id: self.id,
+            off: self.off,
+            _pd: PhantomData,
+        }
+    }
+}
+
+impl<T> Copy for GPtr<T> {}
+impl<T> Clone for GPtr<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+pub trait Resolver {
+    fn resolve_and_forget(&self, id: u128, off: u64) -> *const u8;
+}
+
+static RES: OnceLock<Box<dyn Resolver + Send + Sync + 'static>> = OnceLock::new();
+static MAGIC: OnceLock<u64> = OnceLock::new();
+
+pub(crate) fn get_resolver() -> &'static Box<dyn Resolver + Send + Sync + 'static> {
+    RES.get().unwrap()
+}
+
+pub fn set_resolver(r: Box<dyn Resolver + Send + Sync + 'static>) {
+    RES.set(r).map_err(|_| ()).unwrap();
+    MAGIC.set(rand::random()).unwrap();
+}
+
+pub(crate) fn get_magic() -> u64 {
+    *MAGIC.get().unwrap()
+}
+
+impl<T> GPtr<T> {
+    pub fn new(id: u128, off: u64) -> Self {
+        Self {
+            id,
+            off,
+            _pd: PhantomData,
+        }
+    }
+
+    pub fn resolve(&self) -> *const T {
+        let res = RES.get().unwrap();
+        let ptr = res.resolve_and_forget(self.id, self.off);
+        ptr.cast()
+    }
+}

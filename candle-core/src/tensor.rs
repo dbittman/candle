@@ -1,15 +1,14 @@
 //! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
 use crate::backend::{BackendDevice, BackendStorage};
-use crate::memos_backend::{MemOSBuilder, MemOSStorage};
+use crate::memos_backend::{get_magic, get_resolver, GPtr, MemOSBuilder, MemOSStorage};
 use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
-use crate::quantized::QTensor;
 use crate::scalar::TensorOrScalar;
 use crate::shape::{Dim, Dims, ShapeWithOneHole};
 use crate::{bail, storage::Storage, DType, Device, Error, Layout, Result, Shape};
-use std::any::Any;
+use std::any::{type_name, Any};
 use std::cell::UnsafeCell;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock};
 
 /// Unique identifier for tensors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -39,34 +38,12 @@ pub struct Tensor_ {
     // and Arc<Mutex<Storage>> for tensors where the data could be modified, e.g. variables but
     // that's tricky to encode in the current setup.
     //storage: Arc<RwLock<Storage>>,
-    storage: Holder<Storage>,
+    storage: MaybeRef<Storage>,
     layout: Layout,
     op: BackpropOp,
     is_variable: bool,
     dtype: DType,
     device: Device,
-}
-
-struct Holder<T>(Arc<UnsafeCell<T>>);
-
-impl<T> Clone for Holder<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<T> Holder<T> {
-    pub fn new(t: T) -> Self {
-        Self(Arc::new(UnsafeCell::new(t)))
-    }
-
-    pub fn inner_ref(&self) -> &T {
-        unsafe { self.0.get().as_ref() }.unwrap()
-    }
-
-    pub fn inner_mut(&self) -> &mut T {
-        unsafe { self.0.get().as_mut() }.unwrap()
-    }
 }
 
 impl AsRef<Tensor> for Tensor {
@@ -102,7 +79,7 @@ impl Tensor {
 
 pub enum MaybeRef<T> {
     Ref(*const T, Arc<dyn Any>),
-    Gp(u128, u64),
+    Gp(GPtr<T>, UnsafeCell<(*const T, u64)>),
 }
 
 impl<T: std::fmt::Debug> std::fmt::Debug for MaybeRef<T> {
@@ -118,7 +95,7 @@ impl<T> Clone for MaybeRef<T> {
     fn clone(&self) -> Self {
         match self {
             MaybeRef::Ref(ptr, arc) => MaybeRef::Ref(*ptr, arc.clone()),
-            MaybeRef::Gp(id, size) => MaybeRef::Gp(*id, *size),
+            MaybeRef::Gp(g, r) => MaybeRef::Gp(*g, UnsafeCell::new(unsafe { r.get().read() })),
         }
     }
 }
@@ -142,7 +119,7 @@ impl Invariable for Tensor_ {
     fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
         Ok(Self {
             id: self.id,
-            storage: self.storage.clone(),
+            storage: self.storage.move_to_memos(ctx)?,
             layout: self.layout.clone(),
             op: self.op.move_to_memos(ctx)?,
             is_variable: self.is_variable,
@@ -155,10 +132,58 @@ impl Invariable for Tensor_ {
 unsafe impl<T> Send for MaybeRef<T> {}
 unsafe impl<T> Sync for MaybeRef<T> {}
 
+impl<T> MaybeRef<T> {
+    pub fn new_gp(gp: GPtr<T>) -> Self {
+        MaybeRef::Gp(gp, UnsafeCell::new((core::ptr::null(), 0)))
+    }
+
+    pub fn cast<U>(self) -> MaybeRef<U> {
+        match self {
+            MaybeRef::Ref(p, any) => MaybeRef::Ref(p.cast(), any),
+            MaybeRef::Gp(gptr, unsafe_cell) => {
+                MaybeRef::Gp(gptr.cast(), UnsafeCell::new((core::ptr::null(), 0)))
+            }
+        }
+    }
+
+    pub fn resolve(&self) -> *const T {
+        match self {
+            MaybeRef::Ref(p, _) => *p,
+            MaybeRef::Gp(g, unr) => unsafe {
+                let r = unr.get().read();
+                if r.1 == get_magic() && !r.0.is_null() {
+                    tracing::trace!(
+                        "resolving gp {} {} ({}): already done",
+                        g.id,
+                        g.off,
+                        type_name::<T>()
+                    );
+                    r.0
+                } else {
+                    let p = g.resolve();
+                    tracing::trace!(
+                        "resolving gp {} {} ({}): {:p}",
+                        g.id,
+                        g.off,
+                        type_name::<T>(),
+                        p
+                    );
+                    unr.get().write((p, get_magic()));
+                    p
+                }
+            },
+        }
+    }
+}
+
 impl<T: 'static> MaybeRef<T> {
     pub fn new(tensor: T) -> Self {
         let t = Arc::new(tensor);
         Self::Ref(&*t, t)
+    }
+
+    pub fn new_ref(ptr: *const T, tensor: Arc<dyn Any>) -> Self {
+        Self::Ref(ptr, tensor)
     }
 
     pub fn from_arc(x: Arc<T>) -> Self {
@@ -168,14 +193,18 @@ impl<T: 'static> MaybeRef<T> {
     pub fn inner_mut(&self) -> &mut T {
         match self {
             MaybeRef::Ref(ptr, _) => unsafe { (*ptr as *mut T).as_mut().unwrap() },
-            MaybeRef::Gp(_, _) => todo!(),
+            MaybeRef::Gp(_, _) => unsafe { (self.resolve() as *mut T).as_mut().unwrap() },
         }
     }
 
     pub fn inner_ref(&self) -> &T {
+        if matches!(self, MaybeRef::Ref(_, _)) {
+            //let bt = std::backtrace::Backtrace::force_capture();
+            //tracing::debug!("WARN -- using ref: {}", bt);
+        }
         match self {
             MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
-            MaybeRef::Gp(_, _) => todo!(),
+            MaybeRef::Gp(_, _) => unsafe { self.resolve().as_ref().unwrap() },
         }
     }
 }
@@ -184,12 +213,13 @@ impl<T: Invariable + 'static> MaybeRef<T> {
     pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
         match self {
             MaybeRef::Ref(p, _any) => {
-                println!("MTM: {:p}: {}", *p, std::any::type_name::<T>());
+                tracing::debug!("MTM: {:p}: {}", *p, std::any::type_name::<T>());
                 let t = unsafe { p.as_ref().unwrap() };
                 let t = t.move_to_memos(ctx)?;
-                Ok(MaybeRef::new(t))
+                let gp = ctx.alloc(t);
+                Ok(MaybeRef::Gp(gp, UnsafeCell::new((core::ptr::null(), 0))))
             }
-            MaybeRef::Gp(x, y) => Ok(MaybeRef::Gp(*x, *y)),
+            MaybeRef::Gp(x, y) => Ok(MaybeRef::Gp(*x, UnsafeCell::new(unsafe { y.get().read() }))),
         }
     }
 }
@@ -200,7 +230,7 @@ impl std::ops::Deref for Tensor {
     fn deref(&self) -> &Self::Target {
         match &self.0 {
             MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
-            MaybeRef::Gp(_, _) => todo!(),
+            MaybeRef::Gp(_, _) => unsafe { self.0.resolve().as_ref().unwrap() },
         }
     }
 }
@@ -297,7 +327,7 @@ pub(crate) fn from_storage<S: Into<Shape>>(
     //tracing::debug!("{:?}: {}", device, is_variable);
     let tensor_ = Tensor_ {
         id: TensorId::new(),
-        storage: Holder::new(storage),
+        storage: MaybeRef::new(storage),
         layout: Layout::contiguous(shape),
         op,
         is_variable,
@@ -1873,6 +1903,11 @@ impl Tensor {
             }
             .bt())?,
         };
+        tracing::info!(
+            "stor: {:p} {:p}",
+            self.storage.resolve(),
+            indexes.storage.resolve()
+        );
         let storage = self.storage().index_select(
             &indexes.storage(),
             self.layout(),
@@ -2311,7 +2346,7 @@ impl Tensor {
         let op = BackpropOp::new1(self, Op::Copy);
         let tensor_ = Tensor_ {
             id: TensorId::new(),
-            storage: Holder::new(self.storage().try_clone(self.layout())?),
+            storage: MaybeRef::new(self.storage().try_clone(self.layout())?),
             layout: self.layout.clone(),
             op,
             is_variable: false,
@@ -2382,7 +2417,7 @@ impl Tensor {
             let op = BackpropOp::new1(self, Op::ToDevice);
             let tensor_ = Tensor_ {
                 id: TensorId::new(),
-                storage: Holder::new(storage),
+                storage: MaybeRef::new(storage),
                 layout: self.layout.clone(),
                 op,
                 is_variable: false,

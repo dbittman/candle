@@ -2,6 +2,7 @@ use crate::backend::BackendStorage;
 use crate::memos_backend::MemOSStorage;
 use crate::op::{self, CmpOp, ReduceOp};
 use crate::scalar::Scalar;
+use crate::tensor::Invariable;
 use crate::{CpuStorage, CudaStorage, DType, Device, Error, Layout, MetalStorage, Result, Shape};
 use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3};
 
@@ -13,6 +14,19 @@ pub enum Storage {
     Cuda(CudaStorage),
     Metal(MetalStorage),
     MemOS(MemOSStorage),
+}
+
+impl Invariable for Storage {
+    fn move_to_memos(&self, ctx: &mut crate::memos_backend::MemOSBuilder) -> Result<Self>
+    where
+        Self: Sized,
+    {
+        Ok(match self {
+            Storage::MemOS(storage) => Storage::MemOS(storage.move_to_memos(ctx)?),
+            Storage::Cpu(storage) => Storage::Cpu(storage.clone()),
+            _ => panic!("can't do move-storage for non-memos"),
+        })
+    }
 }
 
 impl Storage {
