@@ -1,5 +1,7 @@
 //! Code for GGML and GGUF files
 use crate::{
+    backend::BackendStorage,
+    cpu,
     cpu_backend::CpuDevice,
     memos_backend::{MemOSBuilder, MemOSDevice, MemOSStorage},
     tensor::{Invariable, MaybeRef},
@@ -7,7 +9,7 @@ use crate::{
 };
 use k_quants::*;
 use safetensors::Dtype;
-use std::{borrow::Cow, sync::Arc};
+use std::{backtrace::Backtrace, borrow::Cow, panic::Location, sync::Arc};
 
 #[cfg(target_feature = "avx")]
 pub mod avx;
@@ -54,6 +56,43 @@ impl Invariable for QTensor {
             QStorage::Cuda(qcuda_storage) => todo!(),
             QStorage::MemOS(qmem_osstorage) => qmem_osstorage.clone(),
         };
+
+        tracing::info!("move qmemos: {:?} {:?}", s.dtype, s.orig_dtype);
+
+        let s = if s.dtype == s.orig_dtype {
+            match s.dtype {
+                GgmlDType::F32 => {
+                    let g = ctx.alloc_slice(s.buffer.as_ref().unwrap().as_slice::<f32>());
+                    QMemOSStorage {
+                        orig_dtype: s.orig_dtype,
+                        dtype: s.dtype,
+                        buffer: Some(MemOSVec::new(
+                            MaybeRef::new_gp(g),
+                            s.buffer.as_ref().unwrap().len / size_of::<f32>(),
+                        )),
+                        id: 0,
+                        off: 0,
+                    }
+                }
+                GgmlDType::Q8_0 => {
+                    let g = ctx.alloc_slice(s.buffer.as_ref().unwrap().as_slice::<BlockQ8_0>());
+                    QMemOSStorage {
+                        orig_dtype: s.orig_dtype,
+                        dtype: s.dtype,
+                        buffer: Some(MemOSVec::new(
+                            MaybeRef::new_gp(g),
+                            s.buffer.as_ref().unwrap().len / size_of::<BlockQ8_0>(),
+                        )),
+                        id: 0,
+                        off: 0,
+                    }
+                }
+                _ => todo!(),
+            }
+        } else {
+            todo!()
+        };
+
         /*
         let s = match &self.storage {
             QStorage::MemOS(qmem_osstorage) => {
@@ -128,6 +167,7 @@ impl Device {
 
 #[derive(Clone)]
 pub struct QMemOSStorage {
+    orig_dtype: GgmlDType,
     dtype: GgmlDType,
     buffer: Option<MemOSVec>,
     id: u128,
@@ -153,6 +193,7 @@ impl From<Box<dyn QuantizedType>> for QMemOSStorage {
                 let buf = MaybeRef::new_ref(p, arc);
                 Self {
                     dtype,
+                    orig_dtype: dtype,
                     id: 0,
                     off: 0,
                     buffer: Some(MemOSVec::new(buf, len)),
@@ -169,10 +210,18 @@ impl From<Box<dyn QuantizedType>> for QMemOSStorage {
                     BlockQ8_0::BLCK_SIZE,
                     align_of::<BlockQ8_0>()
                 );
-                let arc = Arc::new(value);
+
+                let xs = unsafe { core::slice::from_raw_parts(p, len) };
+                let mut ys = vec![0.0; xs.len() * BlockQ8_0::BLCK_SIZE];
+
+                BlockQ8_0::to_float(xs, &mut ys).unwrap();
+                let len = ys.len();
+                let arc = Arc::new(ys);
+                let p = arc.as_ptr();
                 let buf = MaybeRef::new_ref(p, arc);
                 Self {
-                    dtype,
+                    dtype: GgmlDType::F32,
+                    orig_dtype: GgmlDType::Q8_0,
                     id: 0,
                     off: 0,
                     buffer: Some(MemOSVec::new(buf, len)),
@@ -431,16 +480,50 @@ impl MemOSVec {
         }
     }
 
+    #[track_caller]
+    pub fn as_f32_slice(&self) -> Cow<[f32]> {
+        if self.dtype == GgmlDType::F32 {
+            return Cow::Borrowed(self.as_slice());
+        }
+        if self.dtype == GgmlDType::Q8_0 {
+            let slice = unsafe {
+                std::slice::from_raw_parts(
+                    self.buf.resolve() as *const BlockQ8_0,
+                    self.len / BlockQ8_0::DTYPE.type_size(),
+                )
+            }
+            .to_vec();
+
+            let s = slice
+                .dequantize(slice.len() * BlockQ8_0::DTYPE.block_size())
+                .unwrap();
+
+            let v = match s {
+                CpuStorage::F32(my_vec) => my_vec.to_vec(),
+                _ => todo!(),
+            };
+
+            return Cow::Owned(v);
+        }
+        todo!()
+    }
+
+    #[track_caller]
     pub fn as_slice<T: GgmlType>(&self) -> &[T] {
-        unsafe {
+        if self.dtype != T::DTYPE {
+            panic!("Cannot convert {:?} to {:?}", self.dtype, T::DTYPE);
+        }
+        let slice = unsafe {
             std::slice::from_raw_parts(
                 self.buf.resolve() as *const T,
                 self.len / T::DTYPE.type_size(),
             )
-        }
+        };
+        slice
     }
 
     pub fn as_slice_mut<T: GgmlType>(&self) -> &mut [T] {
+        tracing::info!("as_slice_mut: {:?} {:?}", T::DTYPE, self.dtype);
         unsafe {
             std::slice::from_raw_parts_mut(
                 self.buf.resolve() as *mut T,
@@ -492,6 +575,9 @@ impl QuantizedType for MemOSVec {
             _ => todo!(),
         }
 
+        if self.dtype.type_size() != 4 {
+            tracing::info!("dequantize: {:?} {:?}", &ys[ys.len() - 4..], self.dtype());
+        }
         Ok(CpuStorage::F32(ys.into()))
     }
 
@@ -528,6 +614,13 @@ impl<T: k_quants::GgmlType + Send + Sync> QuantizedType for Vec<T> {
     fn dequantize(&self, elem_count: usize) -> Result<CpuStorage> {
         let mut ys = vec![0.0f32; elem_count];
         T::to_float(self.as_slice(), &mut ys)?;
+        if self.dtype().type_size() != 4 {
+            tracing::info!(
+                "dequantize[vec]: {:?} {:?}",
+                &ys[ys.len() - 4..],
+                self.dtype()
+            );
+        }
         Ok(CpuStorage::F32(ys.into()))
     }
 
@@ -744,11 +837,31 @@ impl crate::CustomOp1 for QTensor {
         let self_storage = match &self.storage {
             QStorage::Cpu(storage) => storage,
             QStorage::MemOS(storage) => {
-                let st = storage.buffer.as_ref().unwrap();
+                let mst = storage.buffer.as_ref().unwrap();
+                tracing::info!("==> {:?} {:?} ", mst.dtype, mst.len());
+                /*
+                let st = self
+                    .storage
+                    .dequantize(src_shape.elem_count() + layout.start_offset())
+                    .unwrap();
+                let st = match st {
+                    Storage::Cpu(cpu_storage) => cpu_storage,
+                    Storage::Cuda(cuda_storage) => todo!(),
+                    Storage::Metal(metal_storage) => todo!(),
+                    Storage::MemOS(mem_osstorage) => mem_osstorage.buffer,
+                };
+                */
 
-                tracing::info!("==> {} {:?}", st.len, st.dtype);
-                let s = <f32 as WithDType>::to_cpu_storage(st.as_slice(), false);
-                let slice = <f32 as WithDType>::cpu_storage_as_slice(&s)?;
+                //let s = <f32 as WithDType>::to_cpu_storage(&mst.as_f32_slice(), false);
+                //let slice = <f32 as WithDType>::cpu_storage_as_slice(&st)?;
+                let slice = mst.as_f32_slice();
+                tracing::info!(
+                    "cpu_fwd_memos {} {} {:?} {:?}",
+                    mst.len,
+                    slice.len(),
+                    mst.dtype,
+                    &slice[0..7]
+                );
                 //let slice = st.as_slice::<f32>();
                 let slice =
                     &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
@@ -758,6 +871,7 @@ impl crate::CustomOp1 for QTensor {
                     slice,
                     &mut dst_storage,
                 )?;
+
                 return Ok((crate::CpuStorage::F32(dst_storage.into()), dst_shape));
             }
             QStorage::Metal(_) | QStorage::Cuda(_) => {
@@ -766,6 +880,12 @@ impl crate::CustomOp1 for QTensor {
         };
         let slice = storage.as_slice::<f32>()?;
         let slice = &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
+        tracing::info!(
+            "cpu_fwd_cpu {:?} {} {:?}",
+            storage.dtype(),
+            slice.len(),
+            &slice[0..7]
+        );
         let mut dst_storage = vec![0f32; dst_shape.elem_count()];
         self_storage.matmul_t((dst_shape.elem_count() / n, k, n), slice, &mut dst_storage)?;
         Ok((crate::CpuStorage::F32(dst_storage.into()), dst_shape))
