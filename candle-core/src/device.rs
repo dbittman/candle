@@ -64,7 +64,6 @@ impl<S: WithDType> NdArray for &[S] {
     }
 
     fn to_cpu_storage(&self) -> CpuStorage {
-        tracing::info!("to_cpu_storage");
         S::to_cpu_storage(self, false)
     }
 
@@ -594,9 +593,6 @@ impl Device {
             Device::Cpu => Ok(Storage::Cpu(array.to_cpu_storage())),
             Device::MemOS => {
                 let s = array.to_cpu_storage();
-                tracing::info!("fresh cpu {}", std::any::type_name::<A>());
-                s.print_all_refs();
-                tracing::info!("done fresh cpu");
                 Ok(Storage::MemOS(MemOSStorage::from(s)))
             }
             Device::Cuda(device) => {

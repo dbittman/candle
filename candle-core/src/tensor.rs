@@ -61,7 +61,7 @@ impl Tensor_ {
 
 impl Drop for Tensor_ {
     fn drop(&mut self) {
-        tracing::info!("DROP: {:?}", self.storage);
+        tracing::trace!("DROP: {:?}", self.storage);
     }
 }
 
@@ -169,7 +169,7 @@ impl<T> MaybeRef<T> {
 
     pub fn resolve(&self) -> *const T {
         if let MaybeRef::Ref(p, a, m) = self {
-            tracing::info!("resolve ref {:p} {}", *p, *m == get_magic());
+            tracing::trace!("resolve ref {:p} {}", *p, *m == get_magic());
             if *m != get_magic() {
                 panic!("invalid magic");
             }
@@ -205,21 +205,21 @@ impl<T> MaybeRef<T> {
 
 impl<T: 'static> MaybeRef<T> {
     pub fn new(tensor: T) -> Self {
-        tracing::info!("got magic as {}", get_magic());
+        tracing::trace!("got magic as {}", get_magic());
         let t = Arc::new(tensor);
         std::mem::forget(t.clone());
         Self::Ref(&*t, t, get_magic())
     }
 
     pub fn new_ref(ptr: *const T, tensor: Arc<dyn Any>) -> Self {
-        tracing::info!("got magic as {}", get_magic());
+        tracing::trace!("got magic as {}", get_magic());
 
         std::mem::forget(tensor.clone());
         Self::Ref(ptr, tensor, get_magic())
     }
 
     pub fn from_arc(x: Arc<T>) -> Self {
-        tracing::info!("got magic as {}", get_magic());
+        tracing::trace!("got magic as {}", get_magic());
         std::mem::forget(x.clone());
         Self::Ref(&*x, x, get_magic())
     }
@@ -1947,7 +1947,7 @@ impl Tensor {
             }
             .bt())?,
         };
-        tracing::info!(
+        tracing::trace!(
             "stor: {:p} {:p}",
             self.storage.resolve(),
             indexes.storage.resolve()
@@ -2517,7 +2517,7 @@ impl Tensor {
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn to_dtype(&self, dtype: DType) -> Result<Self> {
-        tracing::debug!("to_dtype: {:?} {:?}", self.dtype(), dtype);
+        tracing::trace!("to_dtype: {:?} {:?}", self.dtype(), dtype);
         if self.dtype() == dtype {
             Ok(self.clone())
         } else {

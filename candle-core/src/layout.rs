@@ -13,7 +13,7 @@ pub struct Layout {
 
 impl Layout {
     pub fn new(shape: Shape, stride: Vec<usize>, start_offset: usize) -> Self {
-        tracing::debug!("{} {}", shape.dims().len(), stride.len());
+        tracing::trace!("{} {}", shape.dims().len(), stride.len());
         Self {
             shape,
             stride: heapless::Vec::from_slice(&stride).unwrap(),

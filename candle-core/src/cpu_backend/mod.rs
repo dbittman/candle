@@ -90,9 +90,9 @@ impl<T> std::ops::Deref for MyVec<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
-        tracing::info!("my_vec deref");
+        tracing::trace!("my_vec deref");
         let ptr = self.0.resolve();
-        tracing::info!("got : {:p}, {}", ptr, self.1);
+        tracing::trace!("got : {:p}, {}", ptr, self.1);
         unsafe { core::slice::from_raw_parts(ptr, self.1) }
     }
 }
@@ -108,11 +108,11 @@ impl<T: 'static> From<Vec<T>> for MyVec<T> {
     fn from(value: Vec<T>) -> Self {
         let value = Arc::new(value);
         let len = value.len();
-        tracing::info!("???? {:p}", value.as_slice());
+        tracing::trace!("???? {:p}", value.as_slice());
         let ptr = value.as_slice().as_ptr();
         //let ptr = value.as_ptr().cast();
         let r = MaybeRef::new_ref(ptr, value);
-        tracing::info!("from vec ref: {:?} {:p}", r, ptr);
+        tracing::trace!("from vec ref: {:?} {:p}", r, ptr);
         Self(r, len)
     }
 }
@@ -355,7 +355,7 @@ impl Map1Any for ReduceIndex {
         src_l: &Layout,
         wrap: W,
     ) -> Result<CpuStorage> {
-        tracing::info!("reduceidx: {:p}", src);
+        tracing::trace!("reduceidx: {:p}", src);
         if src_l.shape().elem_count() == 0 {
             Err(Error::EmptyTensor { op: "reduce" }.bt())?
         }
@@ -679,7 +679,7 @@ struct IndexSelect<'a, T: IntDType> {
 
 impl<I: IntDType> Map1 for IndexSelect<'_, I> {
     fn f<T: WithDType>(&self, src: &[T], layout: &Layout) -> Result<Vec<T>> {
-        tracing::info!("map1: {:p}", src);
+        tracing::trace!("map1: {:p}", src);
         let src = match layout.contiguous_offsets() {
             Some((a, b)) => &src[a..b],
             None => Err(Error::RequiresContiguous { op: "index-select" }.bt())?,
@@ -707,9 +707,9 @@ impl<I: IntDType> Map1 for IndexSelect<'_, I> {
             let start_dst_idx = left_i * right_len * n_ids;
             for i in 0..n_ids {
                 let start_dst_idx = start_dst_idx + i * right_len;
-                tracing::info!("!! {} {} {}", self.ids_l.start_offset(), stride_ids, i);
+                tracing::trace!("!! {} {} {}", self.ids_l.start_offset(), stride_ids, i);
                 let index = self.ids[self.ids_l.start_offset() + stride_ids * i];
-                tracing::info!(
+                tracing::trace!(
                     "Index: {}, {} {} {:?} {}",
                     index,
                     start_src_idx,
@@ -2606,7 +2606,7 @@ impl BackendStorage for CpuStorage {
                     MaybeRef::Gp(_, _) => (core::ptr::null(), 0),
                     MaybeRef::Ref(p, _, m) => (p, m),
                 };
-                tracing::info!(":: {:p} {} {}", p, m, get_magic());
+                tracing::trace!(":: {:p} {} {}", p, m, get_magic());
 
                 IndexSelect { ids, ids_l, dim }.map(self, l)
             }

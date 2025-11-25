@@ -838,7 +838,7 @@ impl crate::CustomOp1 for QTensor {
             QStorage::Cpu(storage) => storage,
             QStorage::MemOS(storage) => {
                 let mst = storage.buffer.as_ref().unwrap();
-                tracing::info!("==> {:?} {:?} ", mst.dtype, mst.len());
+                tracing::trace!("==> {:?} {:?} ", mst.dtype, mst.len());
                 /*
                 let st = self
                     .storage
@@ -855,7 +855,7 @@ impl crate::CustomOp1 for QTensor {
                 //let s = <f32 as WithDType>::to_cpu_storage(&mst.as_f32_slice(), false);
                 //let slice = <f32 as WithDType>::cpu_storage_as_slice(&st)?;
                 let slice = mst.as_f32_slice();
-                tracing::info!(
+                tracing::trace!(
                     "cpu_fwd_memos {} {} {:?} {:?}",
                     mst.len,
                     slice.len(),
@@ -880,7 +880,7 @@ impl crate::CustomOp1 for QTensor {
         };
         let slice = storage.as_slice::<f32>()?;
         let slice = &slice[layout.start_offset()..layout.start_offset() + src_shape.elem_count()];
-        tracing::info!(
+        tracing::trace!(
             "cpu_fwd_cpu {:?} {} {:?}",
             storage.dtype(),
             slice.len(),

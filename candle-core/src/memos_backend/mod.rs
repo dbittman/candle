@@ -27,7 +27,7 @@ impl MemOSStorage {
 
 impl Drop for MemOSStorage {
     fn drop(&mut self) {
-        tracing::info!("DROP-moss");
+        tracing::trace!("DROP-moss");
     }
 }
 
@@ -317,7 +317,7 @@ impl BackendStorage for MemOSStorage {
     }
 
     fn index_select(&self, ids: &Self, src_l: &Layout, ids_l: &Layout, dim: usize) -> Result<Self> {
-        tracing::info!("ISM: {:p} {:p}", ids.buffer(), self.buffer());
+        tracing::trace!("ISM: {:p} {:p}", ids.buffer(), self.buffer());
         Ok(self.with_buffer(
             self.buffer()
                 .index_select(ids.buffer(), src_l, ids_l, dim)?,
@@ -437,7 +437,7 @@ impl MemOSBuilder {
             .alloc(std::alloc::Layout::array::<T>(data.len()).unwrap());
         let slice = unsafe { core::slice::from_raw_parts_mut(ptr, data.len() * size_of::<T>()) };
         let data = unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), slice.len()) };
-        tracing::info!(
+        tracing::trace!(
             "alloc slice: {} {:p} {:p} {:p} {}",
             data.len(),
             slice,

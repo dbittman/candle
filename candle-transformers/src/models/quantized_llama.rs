@@ -287,7 +287,9 @@ impl LayerWeights {
                 }
             }
         };
-        tracing::info!("==> {}", self.kv_cache.is_some());
+        // TODO (dbittman): this is bad.
+        tracing::trace!("==> {}", self.kv_cache.is_some());
+        std::mem::forget(self.kv_cache.take());
         self.kv_cache = Some((k.clone(), v.clone()));
 
         let y = if q.device().is_metal() && seq_len == 1 {
@@ -589,9 +591,9 @@ impl ModelWeights {
             Some(self.mask(seq_len, x.device())?)
         };
         let _enter = self.span.enter();
-        tracing::info!("== forward x tensor");
-        x.print_all_refs();
-        tracing::info!("=< forward x tensor");
+        //tracing::debug!("== forward x tensor");
+        //x.print_all_refs();
+        //tracing::debug!("=< forward x tensor");
         let mut layer_in = self.tok_embeddings.forward(x)?;
         for layer in self.layers.iter_mut() {
             let x = layer_in;

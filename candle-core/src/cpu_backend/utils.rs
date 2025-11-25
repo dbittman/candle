@@ -7,7 +7,7 @@ pub trait Map1 {
     fn f<T: WithDType>(&self, vs: &[T], layout: &Layout) -> Result<Vec<T>>;
 
     fn map(&self, vs: &C, layout: &Layout) -> Result<C> {
-        tracing::info!("util map {:p}", vs);
+        //tracing::info!("util map {:p}", vs);
         match vs {
             C::U8(vs) => Ok(C::U8(self.f(vs, layout)?.into())),
             C::U32(vs) => Ok(C::U32(self.f(vs, layout)?.into())),
