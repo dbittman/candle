@@ -23,6 +23,7 @@ impl TensorId {
     }
 }
 
+#[repr(C)]
 pub struct Tensor_ {
     id: TensorId,
     // As we provide inner mutability on the tensor content, the alternatives are:
@@ -44,6 +45,24 @@ pub struct Tensor_ {
     is_variable: bool,
     dtype: DType,
     device: Device,
+}
+
+impl Tensor_ {
+    pub fn print_all_refs(&self) {
+        tracing::info!("== ref_: {:?}", self.storage);
+        match self.storage.inner_ref() {
+            Storage::Cpu(cpu_storage) => cpu_storage.print_all_refs(),
+            Storage::Cuda(cuda_storage) => todo!(),
+            Storage::Metal(metal_storage) => todo!(),
+            Storage::MemOS(mem_osstorage) => mem_osstorage.print_all_refs(),
+        }
+    }
+}
+
+impl Drop for Tensor_ {
+    fn drop(&mut self) {
+        tracing::info!("DROP: {:?}", self.storage);
+    }
 }
 
 impl AsRef<Tensor> for Tensor {
@@ -69,6 +88,7 @@ impl AsRef<Tensor> for Tensor {
 /// ```
 ///
 /// Tensors are reference counted with [`Arc`] so cloning them is cheap.
+#[repr(C)]
 pub struct Tensor(MaybeRef<Tensor_>);
 
 impl Tensor {
@@ -77,15 +97,16 @@ impl Tensor {
     }
 }
 
+#[repr(C)]
 pub enum MaybeRef<T> {
-    Ref(*const T, Arc<dyn Any>),
+    Ref(*const T, Arc<dyn Any>, u64),
     Gp(GPtr<T>, UnsafeCell<(*const T, u64)>),
 }
 
-impl<T: std::fmt::Debug> std::fmt::Debug for MaybeRef<T> {
+impl<T> std::fmt::Debug for MaybeRef<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MaybeRef::Ref(ptr, _) => write!(f, "Ref({:?})", unsafe { ptr.as_ref().unwrap() }),
+            MaybeRef::Ref(ptr, _, m) => write!(f, "Ref({:p}) ({}, {})", *ptr, *m, get_magic()),
             MaybeRef::Gp(id, size) => write!(f, "Gp({:?}, {:?})", id, size),
         }
     }
@@ -94,7 +115,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for MaybeRef<T> {
 impl<T> Clone for MaybeRef<T> {
     fn clone(&self) -> Self {
         match self {
-            MaybeRef::Ref(ptr, arc) => MaybeRef::Ref(*ptr, arc.clone()),
+            MaybeRef::Ref(ptr, arc, m) => MaybeRef::Ref(*ptr, arc.clone(), *m),
             MaybeRef::Gp(g, r) => MaybeRef::Gp(*g, UnsafeCell::new(unsafe { r.get().read() })),
         }
     }
@@ -139,7 +160,7 @@ impl<T> MaybeRef<T> {
 
     pub fn cast<U>(self) -> MaybeRef<U> {
         match self {
-            MaybeRef::Ref(p, any) => MaybeRef::Ref(p.cast(), any),
+            MaybeRef::Ref(p, any, m) => MaybeRef::Ref(p.cast(), any, m),
             MaybeRef::Gp(gptr, unsafe_cell) => {
                 MaybeRef::Gp(gptr.cast(), UnsafeCell::new((core::ptr::null(), 0)))
             }
@@ -147,8 +168,14 @@ impl<T> MaybeRef<T> {
     }
 
     pub fn resolve(&self) -> *const T {
+        if let MaybeRef::Ref(p, a, m) = self {
+            tracing::info!("resolve ref {:p} {}", *p, *m == get_magic());
+            if *m != get_magic() {
+                panic!("invalid magic");
+            }
+        }
         match self {
-            MaybeRef::Ref(p, _) => *p,
+            MaybeRef::Ref(p, _, m) => *p,
             MaybeRef::Gp(g, unr) => unsafe {
                 let r = unr.get().read();
                 if r.1 == get_magic() && !r.0.is_null() {
@@ -178,32 +205,42 @@ impl<T> MaybeRef<T> {
 
 impl<T: 'static> MaybeRef<T> {
     pub fn new(tensor: T) -> Self {
+        tracing::info!("got magic as {}", get_magic());
         let t = Arc::new(tensor);
-        Self::Ref(&*t, t)
+        std::mem::forget(t.clone());
+        Self::Ref(&*t, t, get_magic())
     }
 
     pub fn new_ref(ptr: *const T, tensor: Arc<dyn Any>) -> Self {
-        Self::Ref(ptr, tensor)
+        tracing::info!("got magic as {}", get_magic());
+
+        std::mem::forget(tensor.clone());
+        Self::Ref(ptr, tensor, get_magic())
     }
 
     pub fn from_arc(x: Arc<T>) -> Self {
-        Self::Ref(&*x, x)
+        tracing::info!("got magic as {}", get_magic());
+        std::mem::forget(x.clone());
+        Self::Ref(&*x, x, get_magic())
     }
 
     pub fn inner_mut(&self) -> &mut T {
         match self {
-            MaybeRef::Ref(ptr, _) => unsafe { (*ptr as *mut T).as_mut().unwrap() },
+            MaybeRef::Ref(ptr, _, _) => unsafe { (*ptr as *mut T).as_mut().unwrap() },
             MaybeRef::Gp(_, _) => unsafe { (self.resolve() as *mut T).as_mut().unwrap() },
         }
     }
 
     pub fn inner_ref(&self) -> &T {
-        if matches!(self, MaybeRef::Ref(_, _)) {
+        if let MaybeRef::Ref(_, _, m) = self {
+            if *m != get_magic() {
+                panic!("Magic mismatch");
+            }
             //let bt = std::backtrace::Backtrace::force_capture();
             //tracing::debug!("WARN -- using ref: {}", bt);
         }
         match self {
-            MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
+            MaybeRef::Ref(ptr, _, _) => unsafe { ptr.as_ref().unwrap() },
             MaybeRef::Gp(_, _) => unsafe { self.resolve().as_ref().unwrap() },
         }
     }
@@ -212,7 +249,7 @@ impl<T: 'static> MaybeRef<T> {
 impl<T: Invariable + 'static> MaybeRef<T> {
     pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
         match self {
-            MaybeRef::Ref(p, _any) => {
+            MaybeRef::Ref(p, _any, _) => {
                 tracing::debug!("MTM: {:p}: {}", *p, std::any::type_name::<T>());
                 let t = unsafe { p.as_ref().unwrap() };
                 let t = t.move_to_memos(ctx)?;
@@ -229,7 +266,10 @@ impl std::ops::Deref for Tensor {
 
     fn deref(&self) -> &Self::Target {
         match &self.0 {
-            MaybeRef::Ref(ptr, _) => unsafe { ptr.as_ref().unwrap() },
+            MaybeRef::Ref(ptr, _, m) => {
+                assert!(*m == get_magic());
+                unsafe { ptr.as_ref().unwrap() }
+            }
             MaybeRef::Gp(_, _) => unsafe { self.0.resolve().as_ref().unwrap() },
         }
     }
@@ -338,6 +378,10 @@ pub(crate) fn from_storage<S: Into<Shape>>(
 }
 
 impl Tensor {
+    pub fn print_all_refs(&self) {
+        tracing::info!("== ref: {:?}", self.0);
+        self.0.inner_ref().print_all_refs();
+    }
     pub(crate) fn ones_impl<S: Into<Shape>>(
         shape: S,
         dtype: DType,

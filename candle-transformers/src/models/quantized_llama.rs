@@ -186,6 +186,7 @@ impl Module for MlpOrMoe {
 }
 
 #[derive(Debug, Clone)]
+#[repr(C)]
 struct LayerWeights {
     attention_wq: QMatMul,
     attention_wk: QMatMul,
@@ -286,6 +287,7 @@ impl LayerWeights {
                 }
             }
         };
+        tracing::info!("==> {}", self.kv_cache.is_some());
         self.kv_cache = Some((k.clone(), v.clone()));
 
         let y = if q.device().is_metal() && seq_len == 1 {
@@ -587,6 +589,9 @@ impl ModelWeights {
             Some(self.mask(seq_len, x.device())?)
         };
         let _enter = self.span.enter();
+        tracing::info!("== forward x tensor");
+        x.print_all_refs();
+        tracing::info!("=< forward x tensor");
         let mut layer_in = self.tok_embeddings.forward(x)?;
         for layer in self.layers.iter_mut() {
             let x = layer_in;

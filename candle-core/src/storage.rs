@@ -9,6 +9,7 @@ use crate::{CustomOp1, CustomOp2, CustomOp3, InplaceOp1, InplaceOp2, InplaceOp3}
 // We do not want to implement Clone on Storage as cloning may fail because of
 // out of memory. Instead try_clone should be used.
 #[derive(Debug)]
+#[repr(C)]
 pub enum Storage {
     Cpu(CpuStorage),
     Cuda(CudaStorage),

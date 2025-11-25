@@ -10,6 +10,7 @@ use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub struct MemOSStorage {
     /// The actual buffer containing the data.
     pub buffer: CpuStorage,
@@ -18,7 +19,20 @@ pub struct MemOSStorage {
     pub device: MemOSDevice,
 }
 
+impl MemOSStorage {
+    pub fn print_all_refs(&self) {
+        self.buffer().print_all_refs();
+    }
+}
+
+impl Drop for MemOSStorage {
+    fn drop(&mut self) {
+        tracing::info!("DROP-moss");
+    }
+}
+
 #[derive(Copy, Clone, Debug)]
+#[repr(C)]
 pub struct MemOSDevice;
 
 impl BackendDevice for MemOSDevice {
@@ -299,14 +313,14 @@ impl BackendStorage for MemOSStorage {
         dim: usize,
     ) -> Result<()> {
         self.buffer_mut()
-            .scatter_add_set(l, &*ids.buffer(), ids_l, &*src.buffer(), src_l, dim)
+            .scatter_add_set(l, ids.buffer(), ids_l, &*src.buffer(), src_l, dim)
     }
 
     fn index_select(&self, ids: &Self, src_l: &Layout, ids_l: &Layout, dim: usize) -> Result<Self> {
         tracing::info!("ISM: {:p} {:p}", ids.buffer(), self.buffer());
         Ok(self.with_buffer(
             self.buffer()
-                .index_select(&*ids.buffer(), src_l, ids_l, dim)?,
+                .index_select(ids.buffer(), src_l, ids_l, dim)?,
         ))
     }
 
@@ -437,11 +451,16 @@ impl MemOSBuilder {
 }
 
 #[repr(C)]
-#[derive(Debug)]
 pub struct GPtr<T> {
     pub id: u128,
     pub off: u64,
     _pd: PhantomData<T>,
+}
+
+impl<T> core::fmt::Debug for GPtr<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GPtr({:p})", self)
+    }
 }
 
 impl<T> GPtr<T> {

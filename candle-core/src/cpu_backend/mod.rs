@@ -7,7 +7,7 @@ use ug::r#const::F32;
 
 use crate::{
     backend::{BackendDevice, BackendStorage},
-    memos_backend::MemOSBuilder,
+    memos_backend::{get_magic, MemOSBuilder},
     op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT},
     tensor::MaybeRef,
     DType, Error, IntDType, Layout, Result, Shape, WithDType,
@@ -23,6 +23,7 @@ const USE_COL2IM_CONV1D_TR: bool = true;
 const USE_IM2COL_CONV2D: bool = true;
 
 #[derive(Debug)]
+#[repr(C)]
 pub struct MyVec<T>(MaybeRef<T>, usize);
 
 impl<T: Clone> MyVec<T> {
@@ -89,7 +90,9 @@ impl<T> std::ops::Deref for MyVec<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
+        tracing::info!("my_vec deref");
         let ptr = self.0.resolve();
+        tracing::info!("got : {:p}, {}", ptr, self.1);
         unsafe { core::slice::from_raw_parts(ptr, self.1) }
     }
 }
@@ -105,14 +108,19 @@ impl<T: 'static> From<Vec<T>> for MyVec<T> {
     fn from(value: Vec<T>) -> Self {
         let value = Arc::new(value);
         let len = value.len();
-        let ptr = value.as_ptr().cast();
-        Self(MaybeRef::new_ref(ptr, value), len)
+        tracing::info!("???? {:p}", value.as_slice());
+        let ptr = value.as_slice().as_ptr();
+        //let ptr = value.as_ptr().cast();
+        let r = MaybeRef::new_ref(ptr, value);
+        tracing::info!("from vec ref: {:?} {:p}", r, ptr);
+        Self(r, len)
     }
 }
 
 // TODO: Maybe we should not implement [Clone] here and instead have an explicit allocator +
 // intercept the oom errors to avoid panicking and provide a proper error.
 #[derive(Debug, Clone)]
+#[repr(C)]
 pub enum CpuStorage {
     U8(MyVec<u8>),
     U32(MyVec<u32>),
@@ -124,6 +132,17 @@ pub enum CpuStorage {
 }
 
 impl CpuStorage {
+    pub fn print_all_refs(&self) {
+        match self {
+            Self::U8(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::U32(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::I64(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::BF16(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::F16(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::F32(x) => tracing::info!("== ref: {:?}", x.0),
+            Self::F64(x) => tracing::info!("== ref: {:?}", x.0),
+        }
+    }
     pub fn from_slice_hack<T: WithDType>(slice: &[T]) -> Self {
         match T::DTYPE {
             DType::F32 => CpuStorage::F32(MyVec::from_slice_hack(unsafe {
@@ -2582,7 +2601,15 @@ impl BackendStorage for CpuStorage {
     fn index_select(&self, ids: &Self, l: &Layout, ids_l: &Layout, dim: usize) -> Result<Self> {
         match ids {
             Self::U8(ids) => IndexSelect { ids, ids_l, dim }.map(self, l),
-            Self::U32(ids) => IndexSelect { ids, ids_l, dim }.map(self, l),
+            Self::U32(ids) => {
+                let (p, m) = match ids.0 {
+                    MaybeRef::Gp(_, _) => (core::ptr::null(), 0),
+                    MaybeRef::Ref(p, _, m) => (p, m),
+                };
+                tracing::info!(":: {:p} {} {}", p, m, get_magic());
+
+                IndexSelect { ids, ids_l, dim }.map(self, l)
+            }
             Self::I64(ids) => IndexSelect { ids, ids_l, dim }.map(self, l),
             _ => Err(Error::UnsupportedDTypeForOp(self.dtype(), "index-select").bt()),
         }
