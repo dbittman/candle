@@ -1,14 +1,21 @@
 //! Tensors are N-dimensional matrixes of elements using a single data type.
 #![allow(clippy::redundant_closure_call)]
-use crate::backend::{BackendDevice, BackendStorage};
-use crate::memos_backend::{get_magic, get_resolver, GPtr, MemOSBuilder, MemOSStorage};
-use crate::op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp};
-use crate::scalar::TensorOrScalar;
-use crate::shape::{Dim, Dims, ShapeWithOneHole};
-use crate::{bail, storage::Storage, DType, Device, Error, Layout, Result, Shape};
-use std::any::{type_name, Any};
-use std::cell::UnsafeCell;
-use std::sync::{Arc, OnceLock};
+use std::{
+    any::{type_name, Any},
+    cell::UnsafeCell,
+    sync::{Arc, OnceLock},
+};
+
+use crate::{
+    backend::{BackendDevice, BackendStorage},
+    bail,
+    memos_backend::{get_magic, get_resolver, GPtr, MemOSBuilder, MemOSStorage},
+    op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp},
+    scalar::TensorOrScalar,
+    shape::{Dim, Dims, ShapeWithOneHole},
+    storage::Storage,
+    DType, Device, Error, Layout, Result, Shape,
+};
 
 /// Unique identifier for tensors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -78,7 +85,7 @@ impl AsRef<Tensor> for Tensor {
 /// The core struct for manipulating tensors.
 ///
 /// ```rust
-/// use candle_core::{Tensor, DType, Device};
+/// use candle_core::{DType, Device, Tensor};
 ///
 /// let a = Tensor::arange(0f32, 6f32, &Device::Cpu)?.reshape((2, 3))?;
 /// let b = Tensor::arange(0f32, 12f32, &Device::Cpu)?.reshape((3, 4))?;
@@ -267,7 +274,7 @@ impl std::ops::Deref for Tensor {
     fn deref(&self) -> &Self::Target {
         match &self.0 {
             MaybeRef::Ref(ptr, _, m) => {
-                assert!(*m == get_magic());
+                assert_eq!(*m, get_magic());
                 unsafe { ptr.as_ref().unwrap() }
             }
             MaybeRef::Gp(_, _) => unsafe { self.0.resolve().as_ref().unwrap() },
@@ -399,7 +406,7 @@ impl Tensor {
     /// Creates a new tensor filled with ones.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, DType, Device};
+    /// use candle_core::{DType, Device, Tensor};
     /// let a = Tensor::ones((2, 3), DType::F32, &Device::Cpu)?;
     /// let b = Tensor::from_slice(&[1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0], (2, 3), &Device::Cpu)?;
     /// // a == b
@@ -421,10 +428,11 @@ impl Tensor {
         self.const_set(crate::scalar::Scalar::one(self.dtype()))
     }
 
-    /// Creates a new tensor filled with ones with same shape, dtype, and device as the other tensor.
+    /// Creates a new tensor filled with ones with same shape, dtype, and device as the other
+    /// tensor.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, DType, Device};
+    /// use candle_core::{DType, Device, Tensor};
     /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
     /// let b = a.ones_like()?;
     /// // b == a + 1
@@ -451,7 +459,7 @@ impl Tensor {
     /// Creates a new tensor filled with zeros.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, DType, Device};
+    /// use candle_core::{DType, Device, Tensor};
     /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
     /// let b = Tensor::from_slice(&[0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0], (2, 3), &Device::Cpu)?;
     /// // a == b
@@ -465,7 +473,7 @@ impl Tensor {
     /// tensor.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, DType, Device};
+    /// use candle_core::{DType, Device, Tensor};
     /// let a = Tensor::zeros((2, 3), DType::F32, &Device::Cpu)?;
     /// let b = a.zeros_like()?;
     /// // b is on CPU f32.
@@ -612,8 +620,8 @@ impl Tensor {
 
     /// Creates a new 1D tensor from an iterator.
     ///```rust
-    /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::from_iter( [1.0, 2.0, 3.0, 4.0].into_iter(), &Device::Cpu)?;
+    /// use candle_core::{Device, Tensor};
+    /// let a = Tensor::from_iter([1.0, 2.0, 3.0, 4.0].into_iter(), &Device::Cpu)?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[1.0, 2.0, 3.0, 4.0]);
     /// # Ok::<(), candle_core::Error>(())
@@ -630,7 +638,7 @@ impl Tensor {
     /// Creates a new 1D tensor with values from the interval `[start, end)` taken with a common
     /// difference `1` from `start`.
     ///```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let a = Tensor::arange(2., 5., &Device::Cpu)?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[2., 3., 4.]);
@@ -643,7 +651,7 @@ impl Tensor {
     /// Creates a new 1D tensor with values from the interval `[start, end)` taken with a common
     /// difference `step` from `start`.
     ///```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let a = Tensor::arange_step(2.0, 4.0, 0.5, &Device::Cpu)?;
     ///
     /// assert_eq!(a.to_vec1::<f64>()?, &[2.0, 2.5, 3.0, 3.5]);
@@ -691,13 +699,10 @@ impl Tensor {
     /// in this vector must be the same as the number of elements defined by the shape.
     /// If the device is cpu, no data copy is made.
     ///```rust
-    /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::from_vec(vec!{1., 2., 3., 4., 5., 6.}, (2, 3), &Device::Cpu)?;
+    /// use candle_core::{Device, Tensor};
+    /// let a = Tensor::from_vec(vec![1., 2., 3., 4., 5., 6.], (2, 3), &Device::Cpu)?;
     ///
-    /// assert_eq!(a.to_vec2::<f64>()?, &[
-    ///     [1., 2., 3.],
-    ///     [4., 5., 6.]
-    /// ]);
+    /// assert_eq!(a.to_vec2::<f64>()?, &[[1., 2., 3.], [4., 5., 6.]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn from_vec<S: ShapeWithOneHole, D: crate::WithDType>(
@@ -711,14 +716,11 @@ impl Tensor {
     /// Creates a new tensor initialized with values from the input slice. The number of elements
     /// in this vector must be the same as the number of elements defined by the shape.
     ///```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let values = vec![1., 2., 3., 4., 5., 6., 7., 8.];
     /// let a = Tensor::from_slice(&values[1..7], (2, 3), &Device::Cpu)?;
     ///
-    /// assert_eq!(a.to_vec2::<f64>()?, &[
-    ///     [2., 3., 4.],
-    ///     [5., 6., 7.]
-    /// ]);
+    /// assert_eq!(a.to_vec2::<f64>()?, &[[2., 3., 4.], [5., 6., 7.]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn from_slice<S: ShapeWithOneHole, D: crate::WithDType>(
@@ -866,15 +868,15 @@ impl Tensor {
     /// # Arguments
     ///
     /// * `args` - A slice of 1D tensors.
-    /// * `xy_indexing` - Whether to use xy indexing or ij indexing. If xy is selected, the
-    ///   first dimension corresponds to the cardinality of the second input and the second
-    ///   dimension corresponds to the cardinality of the first input. If ij is selected, the
-    ///   dimensions are in the same order as the cardinality of the inputs.
+    /// * `xy_indexing` - Whether to use xy indexing or ij indexing. If xy is selected, the first
+    ///   dimension corresponds to the cardinality of the second input and the second dimension
+    ///   corresponds to the cardinality of the first input. If ij is selected, the dimensions are
+    ///   in the same order as the cardinality of the inputs.
     ///
     /// # Examples
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device, Shape};
+    /// use candle_core::{Device, Shape, Tensor};
     /// let x = Tensor::new(&[1f32, 2., 3.], &Device::Cpu)?;
     /// let y = Tensor::new(&[4f32, 5., 6.], &Device::Cpu)?;
     ///
@@ -883,20 +885,31 @@ impl Tensor {
     /// assert_eq!(grids_xy.len(), 2);
     /// assert_eq!(grids_xy[0].dims(), &[3, 3]);
     ///
-    /// assert_eq!(grids_xy[0].to_vec2::<f32>()?, &[[1., 2., 3.], [1., 2., 3.], [1., 2., 3.]]);
-    /// assert_eq!(grids_xy[1].to_vec2::<f32>()?, &[[4., 4., 4.], [5., 5., 5.], [6., 6., 6.]]);
+    /// assert_eq!(
+    ///     grids_xy[0].to_vec2::<f32>()?,
+    ///     &[[1., 2., 3.], [1., 2., 3.], [1., 2., 3.]]
+    /// );
+    /// assert_eq!(
+    ///     grids_xy[1].to_vec2::<f32>()?,
+    ///     &[[4., 4., 4.], [5., 5., 5.], [6., 6., 6.]]
+    /// );
     ///
     /// let grids_ij = Tensor::meshgrid(&[&x, &y], false)?;
     ///
-    /// assert_eq!(grids_ij[0].to_vec2::<f32>()?, &[[1., 1., 1.], [2., 2., 2.], [3., 3., 3.]]);
-    /// assert_eq!(grids_ij[1].to_vec2::<f32>()?, &[[4., 5., 6.], [4., 5., 6.], [4., 5., 6.]]);
+    /// assert_eq!(
+    ///     grids_ij[0].to_vec2::<f32>()?,
+    ///     &[[1., 1., 1.], [2., 2., 2.], [3., 3., 3.]]
+    /// );
+    /// assert_eq!(
+    ///     grids_ij[1].to_vec2::<f32>()?,
+    ///     &[[4., 5., 6.], [4., 5., 6.], [4., 5., 6.]]
+    /// );
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     ///
     /// # Errors
     ///
     /// * Will return `Err` if `args` contains less than 2 tensors.
-    ///
     pub fn meshgrid<A: AsRef<Tensor>>(args: &[A], xy_indexing: bool) -> Result<Vec<Self>> {
         if args.len() <= 1 {
             Err(Error::OpRequiresAtLeastTwoTensors { op: "meshgrid" }.bt())?
@@ -933,7 +946,7 @@ impl Tensor {
     /// be performed.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
     /// let a = a.affine(4., -2.)?;
     /// assert_eq!(a.to_vec2::<f32>()?, &[[-2.0, 2.0], [6.0, 10.0]]);
@@ -1010,27 +1023,16 @@ impl Tensor {
     /// Returns a new tensor that is a narrowed version of the input, the dimension `dim`
     /// ranges from `start` to `start + len`.
     /// ```
-    /// use candle_core::{Tensor, Device};
-    /// let a = Tensor::new(&[
-    ///     [0f32, 1., 2.],
-    ///     [3.  , 4., 5.],
-    ///     [6.  , 7., 8.]
-    /// ], &Device::Cpu)?;
+    /// use candle_core::{Device, Tensor};
+    /// let a = Tensor::new(&[[0f32, 1., 2.], [3., 4., 5.], [6., 7., 8.]], &Device::Cpu)?;
     ///
     /// let b = a.narrow(0, 1, 2)?;
     /// assert_eq!(b.shape().dims(), &[2, 3]);
-    /// assert_eq!(b.to_vec2::<f32>()?, &[
-    ///     [3., 4., 5.],
-    ///     [6., 7., 8.]
-    /// ]);
+    /// assert_eq!(b.to_vec2::<f32>()?, &[[3., 4., 5.], [6., 7., 8.]]);
     ///
     /// let c = a.narrow(1, 1, 1)?;
     /// assert_eq!(c.shape().dims(), &[3, 1]);
-    /// assert_eq!(c.to_vec2::<f32>()?, &[
-    ///     [1.],
-    ///     [4.],
-    ///     [7.]
-    /// ]);
+    /// assert_eq!(c.to_vec2::<f32>()?, &[[1.], [4.], [7.]]);
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> Result<Self> {
@@ -1169,7 +1171,7 @@ impl Tensor {
     /// that the number of elements for each dimension index in `sum_dims` is 1.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
     /// let s = a.sum_keepdim(0)?;
     /// assert_eq!(s.to_vec2::<f32>()?, &[[2., 4.]]);
@@ -1197,7 +1199,7 @@ impl Tensor {
     /// that the number of elements for each dimension index in `mean_dims` is 1.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let a = Tensor::new(&[[0f32, 1.], [2., 3.]], &Device::Cpu)?;
     /// let s = a.mean_keepdim(0)?;
     /// assert_eq!(s.to_vec2::<f32>()?, &[[1., 2.]]);
@@ -1337,7 +1339,8 @@ impl Tensor {
         self.maximum(min)?.minimum(max)
     }
 
-    /// Interpolate the input tensor to the `target_size` size, taking the value of the nearest element.
+    /// Interpolate the input tensor to the `target_size` size, taking the value of the nearest
+    /// element.
     ///
     /// The input tensor should have three dimensions, `(batch, channels, l)`, the returned
     /// tensor also has three dimensions, `(batch, channels, target_size)`.
@@ -1462,7 +1465,7 @@ impl Tensor {
     ///
     /// # Example (vectors)
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let t1 = Tensor::new(&[1.0, 2.0, 3.0], &Device::Cpu)?;
     /// let t2 = Tensor::new(&[4.0, 5.0, 6.0], &Device::Cpu)?;
     /// let res = t1.dot(&t2)?;
@@ -1487,7 +1490,7 @@ impl Tensor {
     ///
     /// # Example
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let t = Tensor::new(&[[3., 4.], [0., 0.]], &Device::Cpu)?;
     /// let norm = t.norm()?;
     /// assert_eq!(norm.to_scalar::<f64>()?, 5.);
@@ -1508,7 +1511,7 @@ impl Tensor {
     ///
     /// # Example
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let mat = Tensor::new(&[[1., 2., 3.], [4., 5., 6.]], &Device::Cpu)?;
     /// let vec = Tensor::new(&[1., 1., 1.], &Device::Cpu)?;
     /// let res = mat.mv(&vec)?;
@@ -1635,7 +1638,7 @@ impl Tensor {
     /// vocabulary size, and `h` the hidden size.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let values = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let ids = Tensor::new(&[2u32, 1u32, 2u32], &Device::Cpu)?;
     /// let emb = values.embedding(&ids)?;
@@ -1891,8 +1894,8 @@ impl Tensor {
     /// # Arguments
     ///
     /// * `self` - The input tensor.
-    /// * `indexes` - The indices of elements to gather, this should have same number of dimensions as `self`
-    ///   and indexes.dims()[d] <= self.dims()[d] for all dimensions d != dim
+    /// * `indexes` - The indices of elements to gather, this should have same number of dimensions
+    ///   as `self` and indexes.dims()[d] <= self.dims()[d] for all dimensions d != dim
     /// * `dim` - the target dimension.
     ///
     /// The resulting tensor has the same shape as `indexes` and use values from `self` indexed on
@@ -2143,7 +2146,7 @@ impl Tensor {
     /// scalar with zero dimensions.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let tensor = tensor.max_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 5.);
@@ -2161,7 +2164,7 @@ impl Tensor {
     /// scalar with zero dimensions.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let tensor = tensor.min_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 0.);
@@ -2179,7 +2182,7 @@ impl Tensor {
     /// scalar with zero dimensions.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let tensor = tensor.sum_all()?;
     /// assert_eq!(tensor.to_scalar::<f32>()?, 15.);
@@ -2244,7 +2247,7 @@ impl Tensor {
     /// Flattens the input tensor by reshaping it into a one dimension tensor.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let tensor = tensor.flatten_all()?;
     /// assert_eq!(tensor.to_vec1::<f32>()?, &[0., 1., 2., 3., 4., 5.]);
@@ -2257,7 +2260,7 @@ impl Tensor {
     /// Returns the sub-tensor fixing the index at `i` on the first dimension.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let t = tensor.get(0)?;
     /// assert_eq!(t.to_vec1::<f32>()?, &[0., 1.]);
@@ -2277,7 +2280,7 @@ impl Tensor {
     /// Returns the sub-tensor fixing the index at `index` on the dimension `dim`.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let t = tensor.get_on_dim(1, 0)?;
     /// assert_eq!(t.to_vec1::<f32>()?, &[0., 2., 4.]);
@@ -2296,10 +2299,13 @@ impl Tensor {
     /// input are swapped.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(&[[0f32, 1.], [2., 3.], [4., 5.]], &Device::Cpu)?;
     /// let tensor = tensor.t()?;
-    /// assert_eq!(tensor.to_vec2::<f32>()?, &[[0.0, 2.0, 4.0], [1.0, 3.0, 5.0]]);
+    /// assert_eq!(
+    ///     tensor.to_vec2::<f32>()?,
+    ///     &[[0.0, 2.0, 4.0], [1.0, 3.0, 5.0]]
+    /// );
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn t(&self) -> Result<Tensor> {
@@ -2340,7 +2346,7 @@ impl Tensor {
     /// dims must be a permutation, i.e. include each dimension index exactly once.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::arange(0u32, 120u32, &Device::Cpu)?.reshape((2, 3, 4, 5))?;
     /// assert_eq!(tensor.dims(), &[2, 3, 4, 5]);
     /// let tensor = tensor.permute((2, 3, 1, 0))?;
@@ -2509,7 +2515,7 @@ impl Tensor {
     /// Casts the input tensor to the target `dtype`.
     ///
     /// ```rust
-    /// use candle_core::{Tensor, Device};
+    /// use candle_core::{Device, Tensor};
     /// let tensor = Tensor::new(3.14159265358979f64, &Device::Cpu)?;
     /// assert_eq!(tensor.to_scalar::<f64>()?, 3.14159265358979);
     /// let tensor = tensor.to_dtype(candle_core::DType::F32)?;
@@ -2746,8 +2752,8 @@ impl Tensor {
         }
     }
 
-    /// Pad the input tensor using same values along dimension `dim`. This adds `left` elements before the
-    /// input tensor values and `right` elements after.
+    /// Pad the input tensor using same values along dimension `dim`. This adds `left` elements
+    /// before the input tensor values and `right` elements after.
     pub fn pad_with_same<D: Dim>(&self, dim: D, left: usize, right: usize) -> Result<Self> {
         if left == 0 && right == 0 {
             Ok(self.clone())
@@ -2977,7 +2983,10 @@ impl Tensor {
     /// let t = Tensor::arange(0., 6., &Device::Cpu)?.reshape((2, 3))?;
     /// assert_eq!(t.to_vec2::<f64>()?, &[[0.0, 1.0, 2.0], [3.0, 4.0, 5.0]]);
     /// let t_flipped = t.flip(&[0])?;
-    /// assert_eq!(t_flipped.to_vec2::<f64>()?, &[[3.0, 4.0, 5.0], [0.0, 1.0, 2.0]]);
+    /// assert_eq!(
+    ///     t_flipped.to_vec2::<f64>()?,
+    ///     &[[3.0, 4.0, 5.0], [0.0, 1.0, 2.0]]
+    /// );
     /// # Ok::<(), candle_core::Error>(())
     /// ```
     pub fn flip(&self, dims: &[usize]) -> Result<Tensor> {
