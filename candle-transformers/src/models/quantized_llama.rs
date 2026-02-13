@@ -14,18 +14,19 @@
 //! - 📝 [Paper](https://arxiv.org/abs/2302.13971)
 //!
 //! ![](https://raw.githubusercontent.com/huggingface/candle/main/candle-examples/examples/quantized/assets/aoc.gif)
-//!
 
-use std::collections::HashMap;
-use std::mem::ManuallyDrop;
+use std::{collections::HashMap, mem::ManuallyDrop};
 
-use crate::quantized_nn::RmsNorm;
-use candle::memos_backend::MemOSBuilder;
-use candle::quantized::QTensor;
-use candle::quantized::{ggml_file, gguf_file};
-use candle::{bail, DType, Device, IndexOp, Result, Tensor};
+use candle::{
+    bail,
+    memos_backend::MemOSBuilder,
+    quantized::{ggml_file, gguf_file, QTensor},
+    DType, Device, IndexOp, Result, Tensor,
+};
 use candle_nn::{Embedding, Module};
 use tracing::Span;
+
+use crate::quantized_nn::RmsNorm;
 
 pub const MAX_SEQ_LEN: usize = 4096;
 
@@ -132,8 +133,9 @@ impl Module for MlpOrMoe {
                 // directly. Maybe we will want to use some custom ops instead at some point.
                 let routing_weights = routing_weights.to_dtype(DType::F32)?.to_vec2::<f32>()?;
 
-                // routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-                // top_x contains the row indexes to evaluate for each expert.
+                // routing_weights, selected_experts = torch.topk(routing_weights, self.top_k,
+                // dim=-1) top_x contains the row indexes to evaluate for each
+                // expert.
                 let mut top_x = vec![vec![]; experts.len()];
                 let mut selected_rws = vec![vec![]; experts.len()];
                 for (row_idx, rw) in routing_weights.iter().enumerate() {
@@ -154,7 +156,8 @@ impl Module for MlpOrMoe {
                 }
 
                 // routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-                // expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+                // expert_mask = torch.nn.functional.one_hot(selected_experts,
+                // num_classes=self.num_experts).permute(2, 1, 0)
 
                 let mut ys = xs.zeros_like()?;
                 for (expert_idx, expert_layer) in experts.iter().enumerate() {
@@ -170,7 +173,8 @@ impl Module for MlpOrMoe {
                     // the current expert. We need to make sure to multiply the output hidden
                     // states by `routing_weights` on the corresponding tokens (top-1 and top-2)
                     let current_state = xs.index_select(&top_x, 0)?.reshape(((), hidden_dim))?;
-                    // current_hidden_states = expert_layer(current_state, routing_weights[top_x_list, idx_list, None])
+                    // current_hidden_states = expert_layer(current_state,
+                    // routing_weights[top_x_list, idx_list, None])
                     let current_hidden_states = expert_layer.forward(&current_state)?;
                     let current_hidden_states =
                         current_hidden_states.broadcast_mul(&selected_rws)?;
@@ -590,7 +594,7 @@ impl ModelWeights {
         } else {
             Some(self.mask(seq_len, x.device())?)
         };
-        let _enter = self.span.enter();
+        //let _enter = self.span.enter();
         //tracing::debug!("== forward x tensor");
         //x.print_all_refs();
         //tracing::debug!("=< forward x tensor");
@@ -612,7 +616,7 @@ impl ModelWeights {
         }
         let x = self.norm.forward(&layer_in)?;
         let x = x.i((.., seq_len - 1, ..))?;
-        let _enter = self.span_output.enter();
+        //let _enter = self.span_output.enter();
         self.output.forward(&x)
     }
 }
