@@ -16,7 +16,10 @@ impl Embedding {
     }
 
     pub fn new(embeddings: Tensor, hidden_size: usize) -> Self {
-        tracing::info!("NEW EMBEDDINGS: {}", std::panic::Backtrace::force_capture());
+        tracing::info!(
+            "NEW EMBEDDINGS: {}",
+            std::backtrace::Backtrace::force_capture()
+        );
         embeddings.print_all_refs();
         Self {
             embeddings,
