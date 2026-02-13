@@ -16,6 +16,7 @@ impl Embedding {
     }
 
     pub fn new(embeddings: Tensor, hidden_size: usize) -> Self {
+        embeddings.print_all_refs();
         Self {
             embeddings,
             hidden_size,
