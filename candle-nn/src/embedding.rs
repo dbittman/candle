@@ -16,11 +16,6 @@ impl Embedding {
     }
 
     pub fn new(embeddings: Tensor, hidden_size: usize) -> Self {
-        tracing::info!(
-            "NEW EMBEDDINGS: {}",
-            std::backtrace::Backtrace::force_capture()
-        );
-        embeddings.print_all_refs();
         Self {
             embeddings,
             hidden_size,
@@ -43,8 +38,8 @@ impl crate::Module for Embedding {
         final_dims.push(self.hidden_size);
         // indexes.print_all_refs();
         let indexes = indexes.flatten_all()?;
-        indexes.print_all_refs();
-        self.embeddings().print_all_refs();
+        //indexes.print_all_refs();
+        //self.embeddings().print_all_refs();
         let values = self.embeddings.index_select(&indexes, 0)?;
         let values = values.reshape(final_dims)?;
         Ok(values)
