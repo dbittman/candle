@@ -436,7 +436,7 @@ pub trait MemOSImp {
 */
 
 use twizzler::{
-    object::{ObjID, Object, ObjectBuilder},
+    object::{ObjID, Object, ObjectBuilder, TypedObject},
     ptr::GlobalPtr,
     BaseType, Invariant,
 };
@@ -455,7 +455,7 @@ impl MemOSBuilder {
         }
     }
 
-    pub fn write_hdr(off: u64, id: ObjID) {
+    pub fn write_hdr(&self, off: u64, id: ObjID) {
         self.hdr.with_tx(|tx| {
             tx.base_mut().ptr = GlobalPtr::new(id, off);
             Ok(())
