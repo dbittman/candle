@@ -455,7 +455,7 @@ impl MemOSBuilder {
         }
     }
 
-    pub fn alloc<T>(&self, data: T) -> GPtr<T> {
+    pub fn alloc<T: Copy>(&mut self, data: T) -> GPtr<T> {
         let res = self.alloc.last().unwrap().alloc(data);
         if res.is_err() {
             self.alloc
@@ -472,7 +472,7 @@ impl MemOSBuilder {
         g
     }
 
-    pub fn alloc_slice<T>(&self, data: &[T]) -> GPtr<T> {
+    pub fn alloc_slice<T>(&mut self, data: &[T]) -> GPtr<T> {
         let res = self.alloc.last().unwrap().alloc_slice(data);
         if res.is_err() {
             self.alloc
