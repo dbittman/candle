@@ -455,12 +455,15 @@ impl MemOSBuilder {
         }
     }
 
-    pub fn alloc<T: Copy>(&mut self, data: T) -> GPtr<T> {
-        let res = self.alloc.last().unwrap().alloc(data);
-        if res.is_err() {
-            self.alloc
-                .push(ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap());
-            return self.alloc(data);
+    pub fn alloc<T>(&mut self, data: T) -> GPtr<T> {
+        let res = self.alloc.last().unwrap().alloc_with_ptr(&data);
+        match res {
+            Ok(_) => {}
+            Err(e) => {
+                self.alloc
+                    .push(ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap());
+                return self.alloc(data);
+            }
         }
         let res = res.unwrap();
         let g = res.global();
@@ -472,7 +475,7 @@ impl MemOSBuilder {
         g
     }
 
-    pub fn alloc_slice<T>(&mut self, data: &[T]) -> GPtr<T> {
+    pub fn alloc_slice<T: Copy>(&mut self, data: &[T]) -> GPtr<T> {
         let res = self.alloc.last().unwrap().alloc_slice(data);
         if res.is_err() {
             self.alloc
