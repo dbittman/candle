@@ -354,7 +354,7 @@ impl ModelWeights {
         };
 
         let this = ctx.alloc(this);
-        ctx.imp.write_hdr(this.off, this.id);
+        ctx.write_hdr(this.off, this.id);
 
         Ok(unsafe { (this.resolve() as *mut ModelWeights).as_mut().unwrap() })
     }

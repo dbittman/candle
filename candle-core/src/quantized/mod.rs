@@ -71,8 +71,6 @@ impl Invariable for QTensor {
                             MaybeRef::new_gp(g),
                             s.buffer.as_ref().unwrap().len / size_of::<f32>(),
                         )),
-                        id: 0,
-                        off: 0,
                     }
                 }
                 GgmlDType::Q8_0 => {
@@ -84,8 +82,6 @@ impl Invariable for QTensor {
                             MaybeRef::new_gp(g),
                             s.buffer.as_ref().unwrap().len / size_of::<BlockQ8_0>(),
                         )),
-                        id: 0,
-                        off: 0,
                     }
                 }
                 _ => todo!(),

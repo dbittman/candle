@@ -1,13 +1,17 @@
 //! Implementation of Backend traits for Metal
-//!
-use crate::backend::{BackendDevice, BackendStorage};
-use crate::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
-use crate::cpu_backend::CpuDevice;
-use crate::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use crate::{CpuStorage, DType, Layout, Result, WithDType};
-use std::any::type_name;
-use std::marker::PhantomData;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::{
+    any::type_name,
+    marker::PhantomData,
+    sync::{Arc, OnceLock, RwLock},
+};
+
+use crate::{
+    backend::{BackendDevice, BackendStorage},
+    conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D},
+    cpu_backend::CpuDevice,
+    op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT},
+    CpuStorage, DType, Layout, Result, WithDType,
+};
 
 #[derive(Debug, Clone)]
 #[repr(C)]
@@ -410,46 +414,71 @@ impl MemOSStorage {
     }
 }
 
-pub struct MemOSBuilder {
-    pub imp: Box<dyn MemOSImp>,
+use twizzler::alloc::arena::ArenaObject;
+
+#[repr(C)]
+#[derive(Invariant, BaseType, Default)]
+struct ModelHdr {
+    ptr: GlobalPtr<()>,
 }
 
+pub struct MemOSBuilder {
+    alloc: Vec<ArenaObject>,
+    hdr: Object<ModelHdr>,
+}
+
+/*
 pub trait MemOSImp {
     fn alloc(&self, layout: std::alloc::Layout) -> (u128, u64, *mut u8);
     fn write_hdr(&self, base_off: u64, id: u128);
     fn get_base(&self) -> *const u8;
 }
+*/
+
+use twizzler::{object::ObjectBuilder, ptr::GlobalPtr};
+
+pub type GPtr<T> = GlobalPtr<T>;
 
 impl MemOSBuilder {
-    pub fn new(imp: Box<dyn MemOSImp>) -> Self {
-        Self { imp }
+    pub fn new() -> Self {
+        Self {
+            hdr: ObjectBuilder::default()
+                .named("model.hdr")
+                .persist(true)
+                .build(ModelHdr::default())
+                .unwrap(),
+            alloc: vec![ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap()],
+        }
     }
 
     pub fn alloc<T>(&self, data: T) -> GPtr<T> {
-        let (id, off, ptr) = self.imp.alloc(std::alloc::Layout::new::<T>());
-        unsafe { ptr.cast::<T>().write(data) };
-        GPtr::new(id, off)
+        let res = self.alloc.last().unwrap().alloc(data);
+        if res.is_err() {
+            self.alloc
+                .push(ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap());
+            return self.alloc(data);
+        }
+        let res = res.unwrap();
+
+        //let (id, off, ptr) = self.imp.alloc(std::alloc::Layout::new::<T>());
+        //unsafe { ptr.cast::<T>().write(data) };
+        //GPtr::new(id, off)
+        res
     }
 
     pub fn alloc_slice<T>(&self, data: &[T]) -> GPtr<T> {
-        let (id, off, ptr) = self
-            .imp
-            .alloc(std::alloc::Layout::array::<T>(data.len()).unwrap());
-        let slice = unsafe { core::slice::from_raw_parts_mut(ptr, data.len() * size_of::<T>()) };
-        let data = unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), slice.len()) };
-        tracing::trace!(
-            "alloc slice: {} {:p} {:p} {:p} {}",
-            data.len(),
-            slice,
-            data,
-            ptr,
-            type_name::<T>()
-        );
-        slice.copy_from_slice(data);
-        GPtr::new(id, off)
+        let res = self.alloc.last().unwrap().alloc_slice(data);
+        if res.is_err() {
+            self.alloc
+                .push(ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap());
+            return self.alloc(data);
+        }
+        let res = res.unwrap();
+        res
     }
 }
 
+/*
 #[repr(C)]
 pub struct GPtr<T> {
     pub id: u128,
@@ -515,3 +544,5 @@ impl<T> GPtr<T> {
         ptr.cast()
     }
 }
+
+*/

@@ -34,6 +34,7 @@ yoke = { workspace = true }
 zip = { workspace = true }
 tracing = { workspace = true }
 heapless = "*"
+twizzler = "*"
 
 [target.'cfg(not(any(target_arch = "wasm32", target_os = "twizzler")))'.dependencies]
 ug = { workspace = true }
