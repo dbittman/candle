@@ -436,7 +436,7 @@ pub trait MemOSImp {
 */
 
 use twizzler::{
-    object::{Object, ObjectBuilder},
+    object::{ObjID, Object, ObjectBuilder},
     ptr::GlobalPtr,
     BaseType, Invariant,
 };
@@ -453,6 +453,13 @@ impl MemOSBuilder {
                 .unwrap(),
             alloc: vec![ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap()],
         }
+    }
+
+    pub fn write_hdr(off: u64, id: ObjID) {
+        self.hdr.with_tx(|tx| {
+            tx.base_mut().ptr = GlobalPtr::new(id, off);
+            Ok(())
+        });
     }
 
     pub fn alloc<T>(&mut self, data: T) -> GPtr<T> {
