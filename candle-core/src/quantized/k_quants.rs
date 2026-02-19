@@ -1,12 +1,15 @@
-use super::utils::{
-    get_scale_min_k4, group_for_dequantization, group_for_quantization, make_q3_quants,
-    make_qkx1_quants, make_qx_quants, nearest_int,
-};
-use super::GgmlDType;
-use crate::Result;
 use byteorder::{ByteOrder, LittleEndian};
 use half::f16;
 use rayon::prelude::*;
+
+use super::{
+    utils::{
+        get_scale_min_k4, group_for_dequantization, group_for_quantization, make_q3_quants,
+        make_qkx1_quants, make_qx_quants, nearest_int,
+    },
+    GgmlDType,
+};
+use crate::Result;
 
 // Default to QK_K 256 rather than 64.
 pub const QK_K: usize = 256;
@@ -75,7 +78,7 @@ pub struct BlockQ5_1 {
 }
 const _: () = assert!(std::mem::size_of::<BlockQ5_1>() == 24);
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 #[repr(C)]
 pub struct BlockQ8_0 {
     pub(crate) d: f16,
@@ -911,7 +914,8 @@ impl GgmlType for BlockQ3K {
             let mut a = &mut aux8[..];
 
             let mut m = 1;
-            //Like the GGML original this is written this way to enable the compiler to vectorize it.
+            //Like the GGML original this is written this way to enable the compiler to vectorize
+            // it.
             for _ in 0..QK_K / 128 {
                 a.iter_mut()
                     .take(32)
