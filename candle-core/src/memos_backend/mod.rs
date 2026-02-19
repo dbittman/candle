@@ -435,7 +435,11 @@ pub trait MemOSImp {
 }
 */
 
-use twizzler::{object::ObjectBuilder, ptr::GlobalPtr};
+use twizzler::{
+    object::{Object, ObjectBuilder},
+    ptr::GlobalPtr,
+    BaseType, Invariant,
+};
 
 pub type GPtr<T> = GlobalPtr<T>;
 
@@ -459,11 +463,13 @@ impl MemOSBuilder {
             return self.alloc(data);
         }
         let res = res.unwrap();
+        let g = res.global();
+        std::mem::forget(res);
 
         //let (id, off, ptr) = self.imp.alloc(std::alloc::Layout::new::<T>());
         //unsafe { ptr.cast::<T>().write(data) };
         //GPtr::new(id, off)
-        res
+        g
     }
 
     pub fn alloc_slice<T>(&self, data: &[T]) -> GPtr<T> {
@@ -471,10 +477,12 @@ impl MemOSBuilder {
         if res.is_err() {
             self.alloc
                 .push(ArenaObject::new(ObjectBuilder::default().persist(true)).unwrap());
-            return self.alloc(data);
+            return self.alloc_slice(data);
         }
         let res = res.unwrap();
-        res
+        let g = res.global();
+        std::mem::forget(res);
+        g
     }
 }
 
@@ -514,7 +522,6 @@ pub trait Resolver {
 }
 
 static RES: OnceLock<Box<dyn Resolver + Send + Sync + 'static>> = OnceLock::new();
-static MAGIC: OnceLock<u64> = OnceLock::new();
 
 pub(crate) fn get_resolver() -> &'static Box<dyn Resolver + Send + Sync + 'static> {
     RES.get().unwrap()
@@ -522,12 +529,8 @@ pub(crate) fn get_resolver() -> &'static Box<dyn Resolver + Send + Sync + 'stati
 
 pub fn set_resolver(r: Box<dyn Resolver + Send + Sync + 'static>) {
     RES.set(r).map_err(|_| ()).unwrap();
-    MAGIC.set(rand::random()).unwrap();
 }
 
-pub(crate) fn get_magic() -> u64 {
-    *MAGIC.get().unwrap()
-}
 
 impl<T> GPtr<T> {
     pub fn new(id: u128, off: u64) -> Self {
@@ -546,3 +549,12 @@ impl<T> GPtr<T> {
 }
 
 */
+
+static MAGIC: OnceLock<u64> = OnceLock::new();
+
+pub(crate) fn get_magic() -> u64 {
+    if MAGIC.get().is_none() {
+        let _ = MAGIC.set(rand::random());
+    }
+    *MAGIC.get().unwrap()
+}

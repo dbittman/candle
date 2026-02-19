@@ -9,7 +9,7 @@ use std::{
 use crate::{
     backend::{BackendDevice, BackendStorage},
     bail,
-    memos_backend::{get_magic, get_resolver, GPtr, MemOSBuilder, MemOSStorage},
+    memos_backend::{get_magic, GPtr, MemOSBuilder, MemOSStorage},
     op::{BackpropOp, BinaryOp, CmpOp, Op, ReduceOp, UnaryOp},
     scalar::TensorOrScalar,
     shape::{Dim, Dims, ShapeWithOneHole},
@@ -188,17 +188,20 @@ impl<T> MaybeRef<T> {
                 if r.1 == get_magic() && !r.0.is_null() {
                     tracing::trace!(
                         "resolving gp {} {} ({}): already done",
-                        g.id,
-                        g.off,
+                        g.id(),
+                        g.offset(),
                         type_name::<T>()
                     );
                     r.0
                 } else {
-                    let p = g.resolve();
+                    let r = g.resolve();
+                    let p = r.raw();
+                    // TODO?
+                    std::mem::forget(r);
                     tracing::trace!(
                         "resolving gp {} {} ({}): {:p}",
-                        g.id,
-                        g.off,
+                        g.id(),
+                        g.offset(),
                         type_name::<T>(),
                         p
                     );
