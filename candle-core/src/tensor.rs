@@ -256,7 +256,7 @@ impl<T: 'static> MaybeRef<T> {
     }
 }
 
-impl<T: Invariable + 'static> MaybeRef<T> {
+impl<T: Invariable + 'static + Copy> MaybeRef<T> {
     pub fn move_to_memos(&self, ctx: &mut MemOSBuilder) -> Result<Self> {
         match self {
             MaybeRef::Ref(p, _any, _) => {
